@@ -1,3 +1,4 @@
+#include "../manager/apk_sign.h"
 #ifdef CONFIG_KSU_SUSFS
 #include <linux/namei.h>
 #include <linux/susfs.h>
@@ -27,12 +28,9 @@ static int do_grant_root(void __user *arg)
 	return ret;
 }
 
-static uint32_t ksuver_override = 0;
-static uint32_t ksuflags_override = 0;
-
 static int do_get_info(void __user *arg)
 {
-	struct ksu_get_info_cmd cmd = { .version = KERNEL_SU_VERSION, .flags = 0 };
+	struct ksu_get_info_cmd cmd = { .version = ksu_get_manager_version(), .flags = 0 };
 
 #ifdef MODULE
 	cmd.flags |= KSU_GET_INFO_FLAG_LKM;
@@ -60,7 +58,7 @@ static int do_get_info(void __user *arg)
 
 static int do_get_info_legacy(void __user *arg)
 {
-	struct ksu_get_info_legacy_cmd cmd = { .version = KERNEL_SU_VERSION, .flags = 0 };
+	struct ksu_get_info_legacy_cmd cmd = { .version = ksu_get_manager_version(), .flags = 0 };
 
 	if (is_manager()) {
 		cmd.flags |= KSU_GET_INFO_FLAG_MANAGER;
@@ -479,72 +477,59 @@ if (susfs_is_current_proc_umounted()) {
 	return 0;
 }
 
-static int do_get_hook_mode(void __user *arg)
-{
-	struct ksu_get_hook_mode_cmd cmd = {0};
-	const char *type = "Manual";
-
-#ifdef CONFIG_KSU_KPROBES_KSUD
-	type = "Kprobes";
-#elif defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
-	type = "Manipulated";
-#endif
-
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
-	strscpy(cmd.mode, type, sizeof(cmd.mode));
+#define ksu_strcpy strscpy
 #else
-	strlcpy(cmd.mode, type, sizeof(cmd.mode));
+#define ksu_strcpy strlcpy
 #endif
 
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
-		pr_err("get_hook_mode: copy_to_user failed\n");
+static int ksu_copy_to_user(void __user *arg, const void *cmd,
+			    size_t size, const char *name)
+{
+	if (copy_to_user(arg, cmd, size)) {
+		pr_err("%s: copy_to_user failed\n", name);
 		return -EFAULT;
 	}
 
 	return 0;
+}
+
+static const char *ksu_hook_type(void)
+{
+#ifdef CONFIG_KSU_KPROBES_KSUD
+	return "Kprobes";
+#elif defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
+	return "Manipulated";
+#else
+	return "Manual";
+#endif
+}
+
+static int do_get_hook_mode(void __user *arg)
+{
+	struct ksu_get_hook_mode_cmd cmd = { 0 };
+
+	ksu_strcpy(cmd.mode, ksu_hook_type(), sizeof(cmd.mode));
+
+	return ksu_copy_to_user(arg, &cmd, sizeof(cmd), "get_hook_mode");
 }
 
 static int do_get_hook_type(void __user *arg)
 {
-	struct ksu_hook_type_cmd cmd = {0};
-	const char *type = "Manual";
+	struct ksu_hook_type_cmd cmd = { 0 };
 
-#ifdef CONFIG_KSU_KPROBES_KSUD
-	type = "Kprobes";
-#elif defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
-	type = "Manipulated";
-#endif
+	ksu_strcpy(cmd.hook_type, ksu_hook_type(), sizeof(cmd.hook_type));
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
-	strscpy(cmd.hook_type, type, sizeof(cmd.hook_type));
-#else
-	strlcpy(cmd.hook_type, type, sizeof(cmd.hook_type));
-#endif
-
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
-		pr_err("get_hook_type: copy_to_user failed\n");
-		return -EFAULT;
-	}
-
-	return 0;
+	return ksu_copy_to_user(arg, &cmd, sizeof(cmd), "get_hook_type");
 }
 
 static int do_get_version_tag(void __user *arg)
 {
-	struct ksu_get_version_tag_cmd cmd = {0};
+	struct ksu_get_version_tag_cmd cmd = { 0 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
-	strscpy(cmd.tag, KERNEL_SU_VERSION_TAG, sizeof(cmd.tag));
-#else
-	strlcpy(cmd.tag, KERNEL_SU_VERSION_TAG, sizeof(cmd.tag));
-#endif
+	ksu_strcpy(cmd.tag, ksu_get_manager_version_tag(), sizeof(cmd.tag));
 
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
-		pr_err("get_version_tag: copy_to_user failed\n");
-		return -EFAULT;
-	}
-
-	return 0;
+	return ksu_copy_to_user(arg, &cmd, sizeof(cmd), "get_version_tag");
 }
 
 static int do_nuke_ext4_sysfs(void __user *arg)
@@ -803,20 +788,20 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
 	{ .cmd = KSU_IOCTL_SET_APP_PROFILE, .name = "SET_APP_PROFILE", .handler = do_set_app_profile, .perm_check = only_manager },
 	{ .cmd = KSU_IOCTL_GET_FEATURE, .name = "GET_FEATURE", .handler = do_get_feature, .perm_check = manager_or_root },
 	{ .cmd = KSU_IOCTL_SET_FEATURE, .name = "SET_FEATURE", .handler = do_set_feature, .perm_check = manager_or_root },
-	{ .cmd = KSU_IOCTL_GET_WRAPPER_FD, .name = "GET_WRAPPER_FD", .handler = do_get_wrapper_fd, .perm_check = manager_or_root },
+	{ .cmd = KSU_IOCTL_GET_WRAPPER_FD, .name = "GET_WRAPPER_FD", .handler = do_get_wrapper_fd, .perm_check = manager_or_root, .allow_su_session = true },
 	{ .cmd = KSU_IOCTL_MANAGE_MARK, .name = "MANAGE_MARK", .handler = do_manage_mark, .perm_check = manager_or_root },
 	{ .cmd = KSU_IOCTL_NUKE_EXT4_SYSFS, .name = "NUKE_EXT4_SYSFS", .handler = do_nuke_ext4_sysfs, .perm_check = manager_or_root },
 	{ .cmd = KSU_IOCTL_ADD_TRY_UMOUNT, .name = "ADD_TRY_UMOUNT", .handler = add_try_umount, .perm_check = manager_or_root },
 	{ .cmd = KSU_IOCTL_SET_INIT_PGRP, .name = "SET_INIT_PGRP", .handler = do_set_init_pgrp, .perm_check = only_root },
 	{ .cmd = KSU_IOCTL_GET_SULOG_FD, .name = "GET_SULOG_FD", .handler = do_get_sulog_fd, .perm_check = only_root },
-	{ .cmd = KSU_IOCTL_DISABLE_ESCAPE_TO_ROOT, .name = "DISABLE_ESCAPE_TO_ROOT", .handler = do_disable_escape_to_root, .perm_check = only_root },
+	{ .cmd = KSU_IOCTL_DISABLE_ESCAPE_TO_ROOT, .name = "DISABLE_ESCAPE_TO_ROOT", .handler = do_disable_escape_to_root, .perm_check = only_root, .allow_su_session = true },
 	{ .cmd = KSU_IOCTL_GET_HOOK_MODE, .name = "GET_HOOK_MODE", .handler = do_get_hook_mode, .perm_check = manager_or_root },
 	{ .cmd = KSU_IOCTL_GET_VERSION_TAG, .name = "GET_VERSION_TAG", .handler = do_get_version_tag, .perm_check = manager_or_root },
 	{ .cmd = KSU_IOCTL_HOOK_TYPE, .name = "HOOK_TYPE", .handler = do_get_hook_type, .perm_check = manager_or_root },
 	{ .cmd = 0, .name = NULL, .handler = NULL, .perm_check = NULL } // Sentinel
 };
 
-long ksu_supercall_handle_ioctl(unsigned int cmd, void __user *argp)
+long ksu_supercall_handle_ioctl(const struct file *filp, unsigned int cmd, void __user *argp)
 {
 	int i;
 
@@ -827,7 +812,8 @@ long ksu_supercall_handle_ioctl(unsigned int cmd, void __user *argp)
 	for (i = 0; ksu_ioctl_handlers[i].handler; i++) {
 		if (cmd == ksu_ioctl_handlers[i].cmd) {
 			// Check permission first
-			if (ksu_ioctl_handlers[i].perm_check && !ksu_ioctl_handlers[i].perm_check()) {
+			if (ksu_ioctl_handlers[i].perm_check && !ksu_ioctl_handlers[i].perm_check() &&
+				!(ksu_ioctl_handlers[i].allow_su_session && ksu_is_su_session_fd(filp))) {
 				pr_warn("ksu ioctl: permission denied for cmd=0x%x uid=%d\n", cmd, current_uid().val);
 				return -EPERM;
 			}
