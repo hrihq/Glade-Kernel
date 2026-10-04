@@ -164,3 +164,5 @@ static inline void susfs_clear_current_proc_no_su(void) {
 		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_mapping->flags)) && \
 		susfs_is_current_proc_umounted_app()
 #endif // #ifndef KSU_SUSFS_DEF_H
+/* v1.5 compat alias exported to legacy hook sites */
+void susfs_generic_fillattr_spoofer(struct inode *inode, struct kstat *stat);
