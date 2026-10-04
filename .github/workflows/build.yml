@@ -1,4 +1,4 @@
-name: Start Reforge
+name: Build Glade Kernel
 
 on:
   workflow_dispatch:
@@ -180,7 +180,7 @@ jobs:
         export KBUILD_COMPILER_STRING="$(clang --version | head -n1)"
 
         echo "========================================="
-        echo "       Reforge Kernel Compilation"
+        echo "       Glade Kernel Compilation"
         echo "========================================="
         echo "Build type : ${{ github.event.inputs.build_type }}"
         echo "Compiler   : ${{ github.event.inputs.compiler }}"
@@ -248,12 +248,12 @@ jobs:
         cd AnyKernel3
 
         zip -r9 \
-          "../Reforge-${{ github.ref_name }}-${{ env.BUILD_TIME }}.zip" \
+          "../Glade-${{ github.ref_name }}-${{ env.BUILD_TIME }}.zip" \
           . \
           -x ".git/*"
 
     - name: 📤 Upload Flashable Zip
       uses: actions/upload-artifact@v5
       with:
-        name: Reforge-${{ github.ref_name }}-${{ env.BUILD_TIME }}
-        path: Reforge-${{ github.ref_name }}-${{ env.BUILD_TIME }}.zip
+        name: Glade-${{ github.ref_name }}-${{ env.BUILD_TIME }}
+        path: Glade-${{ github.ref_name }}-${{ env.BUILD_TIME }}.zip
