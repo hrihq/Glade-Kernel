@@ -1421,7 +1421,7 @@ static int watch_one_dir(struct watch_dir *wd)
 }
 
 /*
- * fsnotify handler â runs inside an SRCU read section held by fsnotify().
+ * fsnotify handler Ã¢ÂÂ runs inside an SRCU read section held by fsnotify().
  * Must not block or call fsnotify_destroy_group() (which internally calls
  * synchronize_srcu on the same SRCU struct, causing a permanent deadlock).
  * Cleanup is deferred to a delayed_work that runs outside the SRCU context.
@@ -1434,8 +1434,7 @@ static int susfs_handle_sdcard_inode_event(struct fsnotify_group *group,
 										const unsigned char *file_name, u32 cookie,
 										struct fsnotify_iter_info *iter_info)
 {
-	if (!file_name || file_name->len != 7 ||
-	    memcmp(file_name->name, "Android", 7))
+	if (!file_name || strncmp((const char *)file_name, "Android", 7))
 		return 0;
 
 	if (test_and_set_bit(0, &sdcard_cleanup_scheduled))
