@@ -238,7 +238,7 @@ jobs:
 
         git clone \
           --depth=1 \
-          https://github.com/MiDoNaSR545/Anykernel3.git \
+          https://github.com/hrihq/Glade-AnyKernel3.git \
           AnyKernel3
 
         cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
