@@ -103,6 +103,8 @@ static inline bool susfs_ends_with(const char *str, const char *suffix) {
 	return !strcmp(str + str_len - suffix_len, suffix);
 }
 
+DECLARE_STATIC_KEY_FALSE(susfs_is_avc_log_spoofing_enabled);
+
 static inline bool susfs_is_current_app_uid(void) {
 	return ((current_uid().val % 100000) >= 10000);
 }
