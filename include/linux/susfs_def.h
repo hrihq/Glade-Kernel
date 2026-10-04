@@ -3,6 +3,8 @@
 
 #include <linux/bits.h>
 #include <linux/string.h>
+#include <linux/cred.h>
+#include <linux/uidgid.h>
 
 /********/
 /* ENUM */
