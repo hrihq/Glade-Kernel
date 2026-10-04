@@ -1,8 +1,4 @@
-#if defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) || defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
-#define SUCOMPAT_HOOK_TYPE static __always_inline int
-#else
 #define SUCOMPAT_HOOK_TYPE int
-#endif
 
 #define SU_PATH "/system/bin/su"
 #define SH_PATH "/system/bin/sh"
