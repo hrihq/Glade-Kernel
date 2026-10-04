@@ -83,6 +83,13 @@ const_debug unsigned int sysctl_sched_time_avg = MSEC_PER_SEC;
  */
 unsigned int sysctl_sched_rt_period = 1000000;
 
+/*
+ * Scheduler tunables used by the WALT governor (CONFIG_SCHED_WALT).
+ * Declared in include/linux/sched/sysctl.h, consumed by kernel/sysctl.c.
+ */
+__read_mostly unsigned int sysctl_sched_conservative_pl = 1;
+__read_mostly unsigned int sysctl_sched_many_wakeup_threshold = 40;
+
 __read_mostly int scheduler_running;
 
 /*
