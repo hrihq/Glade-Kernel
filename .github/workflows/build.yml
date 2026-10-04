@@ -163,7 +163,7 @@ jobs:
         export ARCH=arm64
         export SUBARCH=arm64
 
-        export KBUILD_BUILD_USER=MiDoNaSR
+        export KBUILD_BUILD_USER=hrihq
         export KBUILD_BUILD_HOST=LineageOS
 
         export PATH="$CLANG_PATH/bin:$PATH"
