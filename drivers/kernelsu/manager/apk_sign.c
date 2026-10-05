@@ -370,9 +370,9 @@ enum ksu_manager_type ksu_detect_manager_apk(char *path)
 	if (check_v2_signature(path, 0x384, "a9462b8b98ea1ca7901b0cbdcebfaa35f0aa95e51b01d66e6b6d2c81b97746d8"))
 		return KSU_MANAGER_OTHER;
 
-	// ReSukiSU/ReSukiSU
+	// Baka-SU/BakaSU (formerly ReSukiSU)
     if (check_v2_signature(path, 0x377, "d3469712b6214462764a1d8d3e5cbe1d6819a0b629791b9f4101867821f1df64"))
-        return KSU_MANAGER_RESUKISU;
+        return KSU_MANAGER_BAKASU;
 
 	return KSU_MANAGER_UNKNOWN;
 }
@@ -391,6 +391,8 @@ u32 ksu_get_manager_version(void)
 		return KSU_KSUN_VERSION;
 	case KSU_MANAGER_RESUKISU:
 		return KSU_RESUKISU_VERSION;
+	case KSU_MANAGER_BAKASU:
+		return KSU_BAKASU_VERSION;
 	default:
 		return KERNEL_SU_VERSION;
 	}
@@ -403,6 +405,8 @@ const char *ksu_get_manager_version_tag(void)
 		return KSU_KSUN_TAG;
 	case KSU_MANAGER_RESUKISU:
 		return KSU_RESUKISU_TAG;
+	case KSU_MANAGER_BAKASU:
+		return KSU_BAKASU_TAG;
 	default:
 		return KERNEL_SU_VERSION_TAG;
 	}
