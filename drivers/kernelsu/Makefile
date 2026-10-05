@@ -12,7 +12,7 @@ $(info -- KDIR: $(KDIR))
 $(info -- MDIR: $(MDIR))
 
 # compliant to last upstream kernel change as of 623eba3
-KSU_VERSION := 33294
+KSU_VERSION := 33319
 KSU_VERSION_TAG := v3.4.0
 KSU_KSUN_TAG := v3.4.0
 KSU_RESUKISU_TAG := v4.2.0
