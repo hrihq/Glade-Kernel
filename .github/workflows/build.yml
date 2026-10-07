@@ -119,42 +119,6 @@ jobs:
         "$GITHUB_WORKSPACE/clang/bin/clang" --version | head -n 1
         "$GITHUB_WORKSPACE/clang/bin/ld.lld" --version | head -n 1
 
-    - name: 📱 Patch Panel Dimensions
-      shell: bash
-      run: |
-        set -e
-
-        apply_panel_dimensions() {
-            local w="$1"
-            local h="$2"
-
-            local files=(
-                "arch/arm64/boot/dts/qcom/xiaomi/sweet/dsi-panel-k6-38-0e-0b-fhd-dsc-video.dtsi"
-                "arch/arm64/boot/dts/qcom/xiaomi/sweet/dsi-panel-k6-38-0c-0a-fhd-dsc-video.dtsi"
-            )
-
-            for f in "${files[@]}"; do
-                if [[ -f "$f" ]]; then
-
-                    echo "Patching $f → ${w}x${h}"
-
-                    sed -i \
-                      "s/\(qcom,mdss-pan-physical-width-dimension[[:space:]]*=[[:space:]]*< *\)[0-9]\+/\1${w}/" \
-                      "$f"
-
-                    sed -i \
-                      "s/\(qcom,mdss-pan-physical-height-dimension[[:space:]]*=[[:space:]]*< *\)[0-9]\+/\1${h}/" \
-                      "$f"
-                fi
-            done
-        }
-
-        if [[ "${{ github.event.inputs.build_type }}" == "AOSP" ]]; then
-            apply_panel_dimensions 69 156
-        else
-            apply_panel_dimensions 695 1546
-        fi
-
     - name: 🛠️ Build Kernel
       shell: bash
       run: |
