@@ -154,12 +154,18 @@ jobs:
         clang --version | head -n1
         echo "========================================="
 
+        # Vendored KSU driver: the rev-list count of the squashed driver
+        # repo does not describe the real upstream version, so set it
+        # explicitly. 30401 = v3.4.1.
+        export KSU_VERSION_OVERRIDE=30401
+
         make O=out ARCH=arm64 sweet_defconfig
 
         make \
           -j"$(nproc --all)" \
           O=out \
           ARCH=arm64
+          KSU_VERSION_OVERRIDE=30401
 
         cp out/.config out/sweet_defconfig.txt
 
