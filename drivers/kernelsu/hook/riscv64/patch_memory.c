@@ -3,7 +3,6 @@
 #include <linux/cpu.h>
 #include <linux/mm.h>
 #include <linux/mutex.h>
-#include <linux/overflow.h>
 #include <linux/pgtable.h>
 #include <linux/stop_machine.h>
 #include <linux/uaccess.h>
