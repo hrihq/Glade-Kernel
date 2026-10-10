@@ -17,7 +17,9 @@
 
 struct selinux_policy *backup_sepolicy;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 #define SELINUX_POLICY_INSTEAD_SELINUX_SS
+#endif
 
 #define ALL NULL
 
@@ -41,6 +43,132 @@ static void reset_avc_cache()
 #endif
     selinux_xfrm_notify_policyload();
 }
+
+// ===== 4.14 compat (ported from the v3.4.0 downstream driver) =====
+static struct policydb *get_policydb(void) { return &selinux_state.ss->policydb; }
+
+static inline rwlock_t *ksu_get_policy_rwlock(void) { return &selinux_state.ss->policy_rwlock; }
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+
+static int apply_kernelsu_rules_fn(void *ptr)
+{
+    struct policydb *db = (struct policydb *)ptr;
+    db = &pol->policydb;
+
+    ksu_type(db, KERNEL_SU_DOMAIN, "domain");
+    ksu_permissive(db, KERNEL_SU_DOMAIN);
+    ksu_typeattribute(db, KERNEL_SU_DOMAIN, "mlstrustedsubject");
+    ksu_typeattribute(db, KERNEL_SU_DOMAIN, "netdomain");
+    ksu_typeattribute(db, KERNEL_SU_DOMAIN, "bluetoothdomain");
+
+    // Create unconstrained file type
+    ksu_type(db, KERNEL_SU_FILE, "file_type");
+    ksu_typeattribute(db, KERNEL_SU_FILE, "mlstrustedobject");
+    ksu_allow(db, "domain", KERNEL_SU_FILE, ALL, ALL);
+
+    // allow all!
+    ksu_allow(db, KERNEL_SU_DOMAIN, ALL, ALL, ALL);
+
+    // allow us do any ioctl
+    if (db->policyvers >= POLICYDB_VERSION_XPERMS_IOCTL) {
+        ksu_allowxperm(db, KERNEL_SU_DOMAIN, ALL, "blk_file", ALL);
+        ksu_allowxperm(db, KERNEL_SU_DOMAIN, ALL, "fifo_file", ALL);
+        ksu_allowxperm(db, KERNEL_SU_DOMAIN, ALL, "chr_file", ALL);
+        ksu_allowxperm(db, KERNEL_SU_DOMAIN, ALL, "file", ALL);
+    }
+
+    // our ksud triggered by init
+    ksu_allow(db, "init", KERNEL_SU_DOMAIN, ALL, ALL);
+
+    // copied from Magisk rules
+    // suRights
+    ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "dir", "search");
+    ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "dir", "read");
+    ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "file", "open");
+    ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "file", "read");
+    ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "process", "getattr");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "process", "sigchld");
+
+    // allowLog
+    ksu_allow(db, "logd", KERNEL_SU_DOMAIN, "dir", "search");
+    ksu_allow(db, "logd", KERNEL_SU_DOMAIN, "file", "read");
+    ksu_allow(db, "logd", KERNEL_SU_DOMAIN, "file", "open");
+    ksu_allow(db, "logd", KERNEL_SU_DOMAIN, "file", "getattr");
+
+    // dumpsys, send fd
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "fd", "use");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "fifo_file", "write");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "fifo_file", "read");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "fifo_file", "open");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "fifo_file", "getattr");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "read");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "write");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "connectto");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "getopt");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "getattr");
+
+    // use memfd created by su domain
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "memfd_file", "execute");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "memfd_file", "getattr");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "memfd_file", "map");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "memfd_file", "read");
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "memfd_file", "write");
+
+    // bootctl
+    ksu_allow(db, "hwservicemanager", KERNEL_SU_DOMAIN, "dir", "search");
+    ksu_allow(db, "hwservicemanager", KERNEL_SU_DOMAIN, "file", "read");
+    ksu_allow(db, "hwservicemanager", KERNEL_SU_DOMAIN, "file", "open");
+    ksu_allow(db, "hwservicemanager", KERNEL_SU_DOMAIN, "process", "getattr");
+
+    // Allow all binder transactions
+    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "binder", ALL);
+
+    // Allow system server kill su process
+    ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "getpgid");
+    ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "sigkill");
+
+    // Return value ignored: the policy is published either way.
+    ksu_policydb_fixup_len(db, "apply_kernelsu_rules");
+    return 0;
+}
+
+void apply_kernelsu_rules()
+{
+    struct policydb *db;
+
+    if (!getenforce()) {
+        pr_info("SELinux permissive or disabled, apply rules!\n");
+    }
+
+    db = get_policydb();
+
+    rwlock_t *lock = ksu_get_policy_rwlock();
+    if (!lock)
+        goto do_stop_machine;
+
+    pr_info("%s: type: policy_rwlock \n", __func__);
+    set_cpus_allowed_ptr(current, cpumask_of(raw_smp_processor_id()));
+    write_lock(lock);
+    preempt_enable();
+
+    apply_kernelsu_rules_fn((void *)db);
+
+    preempt_disable();
+    write_unlock(lock);
+    set_cpus_allowed_ptr(current, cpu_online_mask);
+    goto out_flush;
+
+do_stop_machine:
+    pr_info("%s: type: stop_machine()\n", __func__);
+    stop_machine(apply_kernelsu_rules_fn, (void *)db, NULL);
+
+out_flush:
+    smp_mb();
+    reset_avc_cache();
+}
+
+#else
 
 void apply_kernelsu_rules()
 {
@@ -172,6 +300,8 @@ void apply_kernelsu_rules()
 out_unlock:
     mutex_unlock(&selinux_state.policy_mutex);
 }
+
+#endif // >= 5.10
 
 #define KSU_SEPOLICY_MAX_BATCH_SIZE (8U * 1024U * 1024U)
 #define KSU_SEPOLICY_MAX_ARGS 5
@@ -445,6 +575,7 @@ static int apply_one_sepolicy_cmd(struct policydb *db,
     }
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 int handle_sepolicy(void __user *user_data, u64 data_len)
 {
     struct selinux_policy *pol, *old_pol;
@@ -557,3 +688,133 @@ out_free:
 
     return ret;
 }
+
+struct handle_sepolicy_args {
+	void *ctx_success_cmd_count;
+	void *ctx_payload;
+	u64 ctx_data_len;
+};
+
+static int handle_sepolicy_fn(void *data)
+{
+	struct sepol_batch_cursor cursor;
+	int ret = 0;
+	u32 cmd_index = 0;
+	int success_cmd_count = 0;
+
+	struct policydb *db = get_policydb();
+	struct handle_sepolicy_args *ctx = (struct handle_sepolicy_args *)data;
+	u8 *payload = (u8 *)ctx->ctx_payload;
+	u64 data_len = ctx->ctx_data_len;
+
+	cursor.cur = payload;
+	cursor.end = payload + (size_t)data_len;
+
+	while (cursor.cur < cursor.end) {
+		struct sepol_data header;
+		const char *args[KSU_SEPOLICY_MAX_ARGS] = { 0 };
+		int expected_argc;
+		u32 arg_index;
+
+		ret = sepol_read_cmd_header(&cursor, &header);
+		if (ret < 0) {
+			pr_err("sepol: failed to read cmd header #%u.\n", cmd_index);
+			goto out;
+		}
+
+		expected_argc = sepol_expected_argc(header.cmd);
+		if (expected_argc < 0 || expected_argc > KSU_SEPOLICY_MAX_ARGS) {
+			ret = -EINVAL;
+			pr_err("sepol: invalid cmd header #%u.\n", cmd_index);
+			goto out;
+		}
+
+		for (arg_index = 0; arg_index < (u32)expected_argc; arg_index++) {
+			ret = sepol_read_string(&cursor, &args[arg_index]);
+			if (ret < 0) {
+				pr_err("sepol: failed to read cmd #%u arg #%u.\n", cmd_index, arg_index);
+				goto out;
+			}
+		}
+
+		ret = apply_one_sepolicy_cmd(db, &header, args);
+		if (ret < 0)
+			pr_err("sepol: cmd #%u failed, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
+		else {
+			pr_info("sepol: cmd #%u success, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
+			success_cmd_count++;
+			ksu_add_shit_to_list(header.cmd, args);
+		}
+
+		cmd_index++;
+	}
+
+out:
+	*(int *)(ctx->ctx_success_cmd_count) = success_cmd_count;
+	return ret;
+}
+
+int handle_sepolicy(void __user *user_data, u64 data_len)
+{
+	u8 *payload;
+	int ret = 0;
+	int success_cmd_count = 0;
+
+	if (!user_data || !data_len)
+    		return -EINVAL;
+
+	if (data_len > KSU_SEPOLICY_MAX_BATCH_SIZE)
+		return -E2BIG;
+
+	payload = kvmalloc((size_t)data_len, GFP_KERNEL);
+	if (!payload)
+		return -ENOMEM;
+
+	if (copy_from_user(payload, user_data, (size_t)data_len)) {
+		ret = -EFAULT;
+		goto out_free;
+	}
+
+	if (!getenforce()) {
+		pr_info("SELinux permissive or disabled when handle policy!\n");
+	}
+
+	struct handle_sepolicy_args ctx = { 0 };
+	ctx.ctx_success_cmd_count = (void *)&success_cmd_count;
+	ctx.ctx_payload = (void *)payload;
+	ctx.ctx_data_len = (u64)data_len;
+
+	// HACK: lock is held with preempt enabled!
+	rwlock_t *lock = ksu_get_policy_rwlock();
+	if (!lock)
+		goto do_stop_machine;
+
+	set_cpus_allowed_ptr(current, cpumask_of(raw_smp_processor_id()));
+	write_lock(lock);
+	preempt_enable();
+
+	ret = handle_sepolicy_fn((void *)&ctx);
+
+	preempt_disable();
+	write_unlock(lock);
+	set_cpus_allowed_ptr(current, cpu_online_mask);
+	goto out_done;
+
+do_stop_machine:
+	ret = stop_machine(handle_sepolicy_fn, (void *)&ctx, NULL);
+
+out_done:
+	if (ret)
+		goto out_free;
+
+	smp_mb();
+	reset_avc_cache();
+	ret = success_cmd_count;
+
+out_free:
+	kvfree(payload);
+
+	return ret;
+}
+
+#endif
