@@ -13,7 +13,12 @@
 #include "arch.h"
 
 #if defined(__aarch64__)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
 #define KSU_SYS_PREFIX(name) __arm64_sys_##name
+#else
+// 4.14 arm64 has no __arm64_sys_ wrappers; syscalls take plain args
+#define KSU_SYS_PREFIX(name) sys_##name
+#endif
 #elif defined(__x86_64__)
 #define KSU_SYS_PREFIX(name) __x64_sys_##name
 #elif defined(__riscv)
@@ -29,6 +34,16 @@ static_assert(1 == 0, "Unsupported architecture!");
  *
  * usage: ksyscall(close, fd);
  */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
+// 4.14 has no pt_regs syscall wrappers; syscalls take plain args.
+#define __ksyscall(name, a, b, c, d, e, f)                                                                             \
+    ({                                                                                                                 \
+        asmlinkage long KSU_SYS_PREFIX(name)(unsigned long, unsigned long, unsigned long, unsigned long,               \
+                                            unsigned long, unsigned long);                                              \
+        (long)KSU_SYS_PREFIX(name)((unsigned long)(a), (unsigned long)(b), (unsigned long)(c), (unsigned long)(d),     \
+                                   (unsigned long)(e), (unsigned long)(f));                                            \
+    })
+#else
 #define __ksyscall(name, a, b, c, d, e, f)                                                                             \
     ({                                                                                                                 \
         extern long KSU_SYS_PREFIX(name)(const struct pt_regs *);                                                      \
@@ -41,6 +56,7 @@ static_assert(1 == 0, "Unsupported architecture!");
         PT_REGS_PARM6(&__ksu_regs) = (unsigned long)(f);                                                               \
         (long)KSU_SYS_PREFIX(name)(&__ksu_regs);                                                                       \
     })
+#endif
 
 // https://elixir.bootlin.com/musl/v1.2.6/source/src/internal/syscall.h#L45
 #define ksyscall_0(name) __ksyscall(name, 0, 0, 0, 0, 0, 0)

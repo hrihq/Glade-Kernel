@@ -23,11 +23,20 @@
 #include "klog.h" // IWYU pragma: keep
 #include "ksu.h"
 #include "infra/su_mount_ns.h"
+#include "infra/symbol_resolver.h"
 #include "util.h"
 
-extern int path_mount(const char *dev_name, struct path *path,
-                      const char *type_page, unsigned long flags,
-                      void *data_page);
+// path_mount is a 5.x symbol; on 4.14 resolve it at runtime.
+static int (*ksu_path_mount)(const char *dev_name, struct path *path,
+                             const char *type_page, unsigned long flags,
+                             void *data_page);
+static inline int ksu_resolve_path_mount(void)
+{
+    if (ksu_path_mount)
+        return 0;
+    ksu_path_mount = (typeof(ksu_path_mount))find_kernel_symbol_exact("path_mount");
+    return ksu_path_mount ? 0 : -ENOENT;
+}
 
 // global mode , need CAP_SYS_ADMIN and CAP_SYS_CHROOT to perform setns
 static void ksu_mnt_ns_global(void)
@@ -132,7 +141,12 @@ static void ksu_mnt_ns_individual(void)
     // make root mount private
     struct path root_path;
     get_fs_root(current->fs, &root_path);
-    int pm_ret = path_mount(NULL, &root_path, NULL, MS_PRIVATE | MS_REC, NULL);
+    if (ksu_resolve_path_mount()) {
+        pr_err("failed to resolve path_mount symbol\n");
+        path_put(&root_path);
+        return;
+    }
+    int pm_ret = ksu_path_mount(NULL, &root_path, NULL, MS_PRIVATE | MS_REC, NULL);
     path_put(&root_path);
 
     if (pm_ret < 0) {
