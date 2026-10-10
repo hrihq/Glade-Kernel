@@ -785,6 +785,7 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
         return false;
     }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0) || defined(KSU_TYPE_VAL_TO_STRUCT)
     struct ebitmap *new_type_attr_map_array =
         ksu_kvrealloc(db->type_attr_map_array, value * sizeof(struct ebitmap),
                       (value - 1) * sizeof(struct ebitmap));
@@ -821,6 +822,30 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
 
     db->sym_val_to_name[SYM_TYPES] = new_val_to_name_types;
     db->sym_val_to_name[SYM_TYPES][value - 1] = key;
+#else
+    // 4.14: type_attr_map_array / sym_val_to_name are struct flex_array *, and
+    // type_val_to_struct does not exist (type_val_to_struct_array instead).
+    struct flex_array *fa = db->type_attr_map_array;
+    if (flex_array_put(fa, value - 1, NULL, GFP_KERNEL)) {
+        pr_err("add_type: flex_array_put type_attr_map_array failed\n");
+        return false;
+    }
+    struct ebitmap *eb = (struct ebitmap *)flex_array_get(fa, value - 1);
+    ebitmap_init(eb);
+    ebitmap_set_bit(eb, value - 1, 1);
+
+    if (flex_array_put_ptr(db->type_val_to_struct_array, value - 1, type,
+                           GFP_KERNEL | __GFP_ZERO)) {
+        pr_err("add_type: flex_array_put_ptr type_val_to_struct_array failed\n");
+        return false;
+    }
+
+    if (flex_array_put_ptr(db->sym_val_to_name[SYM_TYPES], value - 1, key,
+                           GFP_KERNEL | __GFP_ZERO)) {
+        pr_err("add_type: flex_array_put_ptr sym_val_to_name failed\n");
+        return false;
+    }
+#endif
 
     int i;
     for (i = 0; i < db->p_roles.nprim; ++i) {
@@ -1015,10 +1040,10 @@ bool ksu_genfscon(struct policydb *db, const char *fs_name, const char *path,
 
 
 // 4.14 (pre-5.10) shim: the kernel has no struct selinux_policy. KSU-Next expects
-// ->policydb / ->sidtab / ->latest_granting. Provide a minimal wrapper so the
-// ksu_dup_sepolicy / ksu_destroy_sepolicy signatures compile. These are only
-// reachable from the >=5.10 rules.c path, which is compiled out on this kernel.
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+// ->policydb / ->sidtab / ->latest_granting. sepolicy.h defines it too; guard so a TU
+// that pulled it in via rules.c's include doesn't get a redefinition.
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && !defined(KSU_SELINUX_POLICY_SHIM)
+#define KSU_SELINUX_POLICY_SHIM
 struct selinux_policy {
     struct policydb policydb;
     struct sidtab *sidtab;

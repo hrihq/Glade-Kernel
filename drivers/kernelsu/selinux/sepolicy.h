@@ -6,7 +6,8 @@
 
 #include "ss/policydb.h"
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && !defined(KSU_SELINUX_POLICY_SHIM)
+#define KSU_SELINUX_POLICY_SHIM
 struct selinux_policy {
     struct policydb policydb;
     struct sidtab *sidtab;
