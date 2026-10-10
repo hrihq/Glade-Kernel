@@ -6,6 +6,7 @@
 #include <linux/lockdep.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/stop_machine.h>
 
 #include "uapi/selinux.h"
 #include "klog.h" // IWYU pragma: keep
@@ -54,7 +55,6 @@ static inline rwlock_t *ksu_get_policy_rwlock(void) { return &selinux_state.ss->
 static int apply_kernelsu_rules_fn(void *ptr)
 {
     struct policydb *db = (struct policydb *)ptr;
-    db = &pol->policydb;
 
     ksu_type(db, KERNEL_SU_DOMAIN, "domain");
     ksu_permissive(db, KERNEL_SU_DOMAIN);
