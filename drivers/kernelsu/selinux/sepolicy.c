@@ -228,7 +228,7 @@ static bool remove_avtab_node(struct policydb *db, struct avtab_node *node)
                 // data is u32
                 shrink_size += sizeof(n->datum.u.data);
             n->next = NULL;
-            removed.htable[0] = n;
+            avtab_set_slot(&removed, 0, n);
             removed.nel = 1;
             avtab_destroy(&removed);
             if (db->len >= shrink_size)
@@ -552,7 +552,7 @@ static bool add_type_rule(struct policydb *db, const char *s, const char *t,
 // 5.9.0 : static inline int hashtab_insert(struct hashtab *h, void *key, void
 // *datum, struct hashtab_key_params key_params) 5.8.0: int
 // hashtab_insert(struct hashtab *h, void *k, void *d);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
 static u32 filenametr_hash(const void *k)
 {
     const struct filename_trans_key *ft = k;
@@ -591,43 +591,7 @@ static const struct hashtab_key_params filenametr_key_params = {
 };
 #endif
 
-static u32 filenametr_hash(const void *k)
-{
-	const struct filename_trans_key *ft = k;
-	unsigned long hash;
-	unsigned int byte_num;
-	unsigned char focus;
 
-	hash = ft->ttype ^ ft->tclass;
-
-	byte_num = 0;
-	while ((focus = ft->name[byte_num++]))
-		hash = partial_name_hash(focus, hash);
-	return hash;
-}
-
-static int filenametr_cmp(const void *k1, const void *k2)
-{
-	const struct filename_trans_key *ft1 = k1;
-	const struct filename_trans_key *ft2 = k2;
-	int v;
-
-	v = ft1->ttype - ft2->ttype;
-	if (v)
-		return v;
-
-	v = ft1->tclass - ft2->tclass;
-	if (v)
-		return v;
-
-	return strcmp(ft1->name, ft2->name);
-}
-
-static const struct hashtab_key_params filenametr_key_params = {
-	.hash = filenametr_hash,
-	.cmp = filenametr_cmp,
-};
-#endif
 
 static bool add_filename_trans(struct policydb *db, const char *s, const char *t, const char *c, const char *d, const char *o)
 {
