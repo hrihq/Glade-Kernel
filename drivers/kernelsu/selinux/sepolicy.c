@@ -4,6 +4,7 @@
 #include "ss/hashtab.h"
 #include "ss/policydb.h"
 #include "ss/services.h"
+#include <linux/flex_array.h>
 #include <linux/gfp.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
@@ -160,6 +161,36 @@ static bool is_redundant_avtab_node(struct avtab_node *node)
     return node->datum.u.data == 0U;
 }
 
+// 4.1, https://github.com/torvalds/linux/commit/ba39db6e0519aa8362dbda6523ceb69349a18dc3
+// 5.1, https://github.com/torvalds/linux/commit/acdf52d97f824019888422842757013b37441dd1
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 1, 0) || LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0) || defined(KSU_TYPE_VAL_TO_STRUCT) || defined(KSU_TYPE_VAL_TO_STRUCT_ARRAY)
+static inline struct avtab_node *avtab_get_slot(struct avtab *ab, int i)
+{
+    // htable is **
+    // struct avtab_node **htable;
+    return ab->htable[i];
+}
+static inline void avtab_set_slot(struct avtab *ab, int i, struct avtab_node *node)
+{
+    ab->htable[i] = node;
+}
+#else
+static inline struct avtab_node *avtab_get_slot(struct avtab *ab, int i)
+{
+    // htable is struct flex_array *
+    // this can ret NULL!
+    struct avtab_node **p = flex_array_get(ab->htable, i);
+    if (!p)
+        return NULL;
+
+    return *p;
+}
+static inline void avtab_set_slot(struct avtab *ab, int i, struct avtab_node *node)
+{
+    flex_array_put_ptr(ab->htable, i, node, GFP_KERNEL | __GFP_ZERO);
+}
+#endif
+
 static bool remove_avtab_node(struct policydb *db, struct avtab_node *node)
 {
     int i;
@@ -177,14 +208,14 @@ static bool remove_avtab_node(struct policydb *db, struct avtab_node *node)
 
     for (i = 0; i < db->te_avtab.nslot; i++) {
         prev = NULL;
-        for (n = db->te_avtab.htable[i]; n; prev = n, n = n->next) {
+        for (n = avtab_get_slot(&db->te_avtab, i); n; prev = n, n = n->next) {
             if (n != node)
                 continue;
 
             if (prev)
                 prev->next = n->next;
             else
-                db->te_avtab.htable[i] = n->next;
+                avtab_set_slot(&db->te_avtab, i, n->next);
 
             if (db->te_avtab.nel > 0)
                 db->te_avtab.nel--;
@@ -560,94 +591,170 @@ static const struct hashtab_key_params filenametr_key_params = {
 };
 #endif
 
-static bool add_filename_trans(struct policydb *db, const char *s,
-                               const char *t, const char *c, const char *d,
-                               const char *o)
+static u32 filenametr_hash(const void *k)
 {
-    struct type_datum *src, *tgt, *def;
-    struct class_datum *cls;
-    struct filename_trans_key *new_key = NULL;
-    int rc;
+	const struct filename_trans_key *ft = k;
+	unsigned long hash;
+	unsigned int byte_num;
+	unsigned char focus;
 
-    src = symtab_search(&db->p_types, s);
-    if (src == NULL) {
-        pr_warn("source type %s does not exist\n", s);
-        return false;
-    }
-    tgt = symtab_search(&db->p_types, t);
-    if (tgt == NULL) {
-        pr_warn("target type %s does not exist\n", t);
-        return false;
-    }
-    cls = symtab_search(&db->p_classes, c);
-    if (cls == NULL) {
-        pr_warn("class %s does not exist\n", c);
-        return false;
-    }
-    def = symtab_search(&db->p_types, d);
-    if (def == NULL) {
-        pr_warn("default type %s does not exist\n", d);
-        return false;
-    }
+	hash = ft->ttype ^ ft->tclass;
 
-    struct filename_trans_key key;
-    key.ttype = tgt->value;
-    key.tclass = cls->value;
-    key.name = (char *)o;
+	byte_num = 0;
+	while ((focus = ft->name[byte_num++]))
+		hash = partial_name_hash(focus, hash);
+	return hash;
+}
 
-    struct filename_trans_datum *last = NULL;
+static int filenametr_cmp(const void *k1, const void *k2)
+{
+	const struct filename_trans_key *ft1 = k1;
+	const struct filename_trans_key *ft2 = k2;
+	int v;
 
-    struct filename_trans_datum *trans = policydb_filenametr_search(db, &key);
-    while (trans) {
-        if (ebitmap_get_bit(&trans->stypes, src->value - 1)) {
-            // Duplicate, overwrite existing data and return
-            trans->otype = def->value;
-            return true;
-        }
-        if (trans->otype == def->value)
-            break;
-        last = trans;
-        trans = trans->next;
-    }
+	v = ft1->ttype - ft2->ttype;
+	if (v)
+		return v;
 
-    if (trans == NULL) {
-        trans = (struct filename_trans_datum *)kcalloc(1, sizeof(*trans),
-                                                       GFP_KERNEL);
-        if (!trans) {
-            pr_err("add_filename_trans: alloc filename_trans_datum failed\n");
-            goto out;
-        }
-        new_key = (struct filename_trans_key *)kzalloc(sizeof(*new_key), GFP_KERNEL);
-        if (!new_key) {
-            pr_err("add_filename_trans: alloc filename_trans_key failed\n");
-            goto free_trans;
-        }
-        *new_key = key;
-        new_key->name = kstrdup(key.name, GFP_KERNEL);
-        if (!new_key->name) {
-            pr_err("add_filename_trans: kstrdup name failed\n");
-            goto free_key;
-        }
-        trans->next = last;
-        trans->otype = def->value;
-        rc = hashtab_insert(&db->filename_trans, new_key, trans, filenametr_key_params);
-        if (rc) {
-            pr_err("add_filename_trans: hashtab_insert failed: %d\n", rc);
-            goto free_name;
-        }
-    }
+	v = ft1->tclass - ft2->tclass;
+	if (v)
+		return v;
 
-    db->compat_filename_trans_count++;
-    return ebitmap_set_bit(&trans->stypes, src->value - 1, 1) == 0;
+	return strcmp(ft1->name, ft2->name);
+}
+
+static const struct hashtab_key_params filenametr_key_params = {
+	.hash = filenametr_hash,
+	.cmp = filenametr_cmp,
+};
+#endif
+
+static bool add_filename_trans(struct policydb *db, const char *s, const char *t, const char *c, const char *d, const char *o)
+{
+	struct type_datum *src, *tgt, *def;
+	struct class_datum *cls;
+	int rc;
+
+	src = symtab_search(&db->p_types, s);
+	if (src == NULL) {
+		pr_warn("source type %s does not exist\n", s);
+		return false;
+	}
+	tgt = symtab_search(&db->p_types, t);
+	if (tgt == NULL) {
+		pr_warn("target type %s does not exist\n", t);
+		return false;
+	}
+	cls = symtab_search(&db->p_classes, c);
+	if (cls == NULL) {
+		pr_warn("class %s does not exist\n", c);
+		return false;
+	}
+	def = symtab_search(&db->p_types, d);
+	if (def == NULL) {
+		pr_warn("default type %s does not exist\n", d);
+		return false;
+	}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
+	struct filename_trans_key *new_key = NULL;
+	struct filename_trans_key key;
+	key.ttype = tgt->value;
+	key.tclass = cls->value;
+	key.name = (char *)o;
+
+	struct filename_trans_datum *last = NULL;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+	struct filename_trans_datum *trans = policydb_filenametr_search(db, &key);
+#else
+	struct filename_trans_datum *trans = hashtab_search(&db->filename_trans, &key);
+#endif
+	while (trans) {
+		if (ebitmap_get_bit(&trans->stypes, src->value - 1)) {
+			// Duplicate, overwrite existing data and return
+			trans->otype = def->value;
+			return true;
+		}
+		if (trans->otype == def->value)
+			break;
+		last = trans;
+		trans = trans->next;
+	}
+
+	if (trans == NULL) {
+		trans = (struct filename_trans_datum *)kcalloc(1, sizeof(*trans), GFP_KERNEL);
+		if (!trans) {
+			pr_err("add_filename_trans: alloc filename_trans_datum failed\n");
+			goto out;
+		}
+		new_key = (struct filename_trans_key *)kzalloc(sizeof(*new_key), GFP_KERNEL);
+		if (!new_key) {
+			pr_err("add_filename_trans: alloc filename_trans_key failed\n");
+			goto free_trans;
+		}
+		*new_key = key;
+		new_key->name = kstrdup(key.name, GFP_KERNEL);
+		if (!new_key->name) {
+			pr_err("add_filename_trans: kstrdup name failed\n");
+			goto free_key;
+		}
+		trans->next = last;
+		trans->otype = def->value;
+		rc = hashtab_insert(&db->filename_trans, new_key, trans, filenametr_key_params);
+		if (rc) {
+			pr_err("add_filename_trans: hashtab_insert failed: %d\n", rc);
+			goto free_name;
+		}
+	}
+
+	db->compat_filename_trans_count++;
+	return ebitmap_set_bit(&trans->stypes, src->value - 1, 1) == 0;
+#else // < 5.7.0, has no filename_trans_key, but struct filename_trans
+
+	struct filename_trans *new_key = NULL;
+	struct filename_trans key;
+	key.ttype = tgt->value;
+	key.tclass = cls->value;
+	key.name = (char *)o;
+
+	struct filename_trans_datum *trans = hashtab_search(db->filename_trans, &key);
+	if (trans == NULL) {
+		trans = (struct filename_trans_datum *)kcalloc(sizeof(*trans), 1, GFP_KERNEL);
+		if (!trans) {
+			pr_err("add_filename_trans: Failed to alloc datum\n");
+			goto out;
+		}
+		new_key = (struct filename_trans *)kzalloc(sizeof(*new_key), GFP_KERNEL);
+		if (!new_key) {
+			pr_err("add_filename_trans: Failed to alloc new_key\n");
+			goto free_trans;
+		}
+		*new_key = key;
+		new_key->name = kstrdup(key.name, GFP_KERNEL);
+		if (!new_key->name) {
+			pr_err("add_filename_trans: kstrdup name failed\n");
+			goto free_key;
+		}
+		trans->otype = def->value;
+		rc = hashtab_insert(db->filename_trans, new_key, trans);
+		if (rc) {
+			pr_err("add_filename_trans: hashtab_insert failed: %d\n", rc);
+			goto free_name;
+		}
+	}
+
+	return ebitmap_set_bit(&db->filename_trans_ttypes, src->value - 1, 1) == 0;
+#endif
 
 free_name:
-    kfree(new_key->name);
+	kfree(new_key->name);
 free_key:
-    kfree(new_key);
+	kfree(new_key);
 free_trans:
-    kfree(trans);
+	kfree(trans);
 out:
-    return false;
+	return false;
 }
 
 static bool add_genfscon(struct policydb *db, const char *fs_name,
@@ -941,6 +1048,19 @@ bool ksu_genfscon(struct policydb *db, const char *fs_name, const char *path,
 {
     return add_genfscon(db, fs_name, path, ctx);
 }
+
+
+// 4.14 (pre-5.10) shim: the kernel has no struct selinux_policy. KSU-Next expects
+// ->policydb / ->sidtab / ->latest_granting. Provide a minimal wrapper so the
+// ksu_dup_sepolicy / ksu_destroy_sepolicy signatures compile. These are only
+// reachable from the >=5.10 rules.c path, which is compiled out on this kernel.
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+struct selinux_policy {
+    struct policydb policydb;
+    struct sidtab *sidtab;
+    u32 latest_granting;
+};
+#endif
 
 // ======== sepolicy ========
 
