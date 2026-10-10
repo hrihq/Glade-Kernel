@@ -753,6 +753,7 @@ out:
 	*(int *)(ctx->ctx_success_cmd_count) = success_cmd_count;
 	return ret;
 }
+#endif
 
 int handle_sepolicy(void __user *user_data, u64 data_len)
 {
@@ -817,4 +818,3 @@ out_free:
 	return ret;
 }
 
-#endif
