@@ -1,3 +1,28 @@
+#include "util.h"
+#include <linux/err.h>
+#include <linux/fs.h>
+#include <linux/gfp.h>
+#include <linux/kernel.h>
+#include <linux/limits.h>
+#include <linux/slab.h>
+#include <linux/version.h>
+#ifdef CONFIG_KSU_DEBUG
+#include <linux/moduleparam.h>
+#endif
+#include <crypto/hash.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+#include <crypto/sha2.h>
+#else
+#include <crypto/sha.h>
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+#include <linux/hex.h>
+#endif
+
+#include "manager/apk_sign.h"
+#include "uapi/app_profile.h"
+#include "klog.h" // IWYU pragma: keep
+
 struct sdesc {
 	struct shash_desc shash;
 	char ctx[];
@@ -16,7 +41,8 @@ static struct sdesc *init_sdesc(struct crypto_shash *alg)
 	return sdesc;
 }
 
-static int calc_hash(struct crypto_shash *alg, const unsigned char *data, unsigned int datalen, unsigned char *digest)
+static int calc_hash(struct crypto_shash *alg, const unsigned char *data,
+                     unsigned int datalen, unsigned char *digest)
 {
 	struct sdesc *sdesc;
 	int ret;
@@ -32,7 +58,8 @@ static int calc_hash(struct crypto_shash *alg, const unsigned char *data, unsign
 	return ret;
 }
 
-static int ksu_sha256(const unsigned char *data, unsigned int datalen, unsigned char *digest)
+static int ksu_sha256(const unsigned char *data, unsigned int datalen,
+                      unsigned char *digest)
 {
 	struct crypto_shash *alg;
 	char *hash_alg_name = "sha256";
@@ -70,7 +97,7 @@ static bool read_length_prefixed_end(struct file *fp, loff_t *pos, loff_t contai
 }
 
 static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, unsigned expected_size,
-						const char *expected_sha256)
+			const char *expected_sha256)
 {
 	loff_t signers_end, signer_end, signed_data_end, digests_end, certificates_end;
 	u32 certificate_size;
@@ -99,18 +126,17 @@ static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, unsigned
 		return false;
 	}
 
-	char *memory __offstack(CERT_MAX_LENGTH + SHA256_DIGEST_SIZE + SHA256_DIGEST_SIZE * 2 + 1);
-	char *cert = memory;
+	char cert[CERT_MAX_LENGTH];
 	if (!read_exact(fp, cert, certificate_size, pos, certificates_end))
 		return false;
 
-	unsigned char *digest = cert + CERT_MAX_LENGTH;
+	unsigned char digest[SHA256_DIGEST_SIZE];
 	if (ksu_sha256(cert, certificate_size, digest)) {
 		pr_info("sha256 error\n");
 		return false;
 	}
 
-	char *hash_str = digest + SHA256_DIGEST_SIZE;
+	char hash_str[SHA256_DIGEST_SIZE * 2 + 1];
 	hash_str[SHA256_DIGEST_SIZE * 2] = '\0';
 
 	bin2hex(hash_str, digest, SHA256_DIGEST_SIZE);
@@ -118,7 +144,9 @@ static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, unsigned
 	return strcmp(expected_sha256, hash_str) == 0;
 }
 
-static __always_inline bool check_v2_signature(char *path, unsigned expected_size, const char *expected_sha256)
+static __always_inline bool check_v2_signature(char *path,
+                                               unsigned expected_size,
+                                               const char *expected_sha256)
 {
 	unsigned char buffer[0x10] = { 0 };
 	u32 cd_offset, cd_size;
@@ -131,31 +159,13 @@ static __always_inline bool check_v2_signature(char *path, unsigned expected_siz
 	int v2_signing_blocks = 0;
 
 	int i;
-
-	struct path kpath;
-	if (kern_path(path, 0, &kpath))
-		return false;
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0) 
-	if (inode_is_locked(kpath.dentry->d_inode))
-#else
-	if (mutex_is_locked(&kpath.dentry->d_inode->i_mutex))
-#endif
-	{
-		pr_info("%s: inode is locked for %s\n", __func__, path);
-		path_put(&kpath);
-		return false;
-	}
-
-	path_put(&kpath);
-
 	struct file *fp = ksu_filp_open_nonotify(path, O_RDONLY | O_NOATIME);
 	if (IS_ERR(fp)) {
 		pr_err("open %s error.\n", path);
 		return false;
 	}
 
-	file_size = vfs_llseek(fp, 0, SEEK_END);
+	file_size = generic_file_llseek(fp, 0, SEEK_END);
 	if (file_size < 0)
 		goto clean;
 
@@ -287,138 +297,38 @@ static struct kernel_param_ops expected_size_ops = {
 	.get = param_get_uint,
 };
 
-module_param_cb(ksu_debug_manager_appid, &expected_size_ops, &ksu_debug_manager_appid, S_IRUSR | S_IWUSR);
+module_param_cb(ksu_debug_manager_appid, &expected_size_ops,
+                &ksu_debug_manager_appid, S_IRUSR | S_IWUSR);
 
 #endif
 
-int get_pkg_from_apk_path(char *pkg, const char *path)
+// /data/app/XXXXX/<PACKAGE_NAME>-YYY, which contains base.apk
+int get_pkg_from_apk_dir_path(char *pkg, const char *path)
 {
 	int len = strlen(path);
 	if (len >= KSU_MAX_PACKAGE_NAME || len < 1)
 		return -1;
 
-	const char *last_slash = NULL;
-	const char *second_last_slash = NULL;
-
-	int i;
-	for (i = len - 1; i >= 0; i--) {
-		if (path[i] == '/') {
-			if (!last_slash) {
-				last_slash = &path[i];
-			} else {
-				second_last_slash = &path[i];
-				break;
-			}
-		}
-	}
-
-	if (!last_slash || !second_last_slash)
+	const char *last_slash = strrchr(path, '/');
+	if (!last_slash)
 		return -1;
 
-	const char *last_hyphen = strchr(second_last_slash, '-');
-	if (!last_hyphen || last_hyphen > last_slash)
+	const char *last_hyphen = strchr(last_slash, '-');
+	if (!last_hyphen)
 		return -1;
 
-	int pkg_len = last_hyphen - second_last_slash - 1;
+	int pkg_len = last_hyphen - last_slash - 1;
 	if (pkg_len >= KSU_MAX_PACKAGE_NAME || pkg_len <= 0)
 		return -1;
 
 	// Copying the package name
-	memcpy(pkg, second_last_slash + 1, pkg_len);
+	memcpy(pkg, last_slash + 1, pkg_len);
 	pkg[pkg_len] = '\0';
 
 	return 0;
 }
 
-static enum ksu_manager_type detected_manager = KSU_MANAGER_UNKNOWN;
-
-enum ksu_manager_type ksu_detect_manager_apk(char *path)
-{
-#ifdef KSU_MANAGER_PACKAGE
-	char pkg[KSU_MAX_PACKAGE_NAME];
-	if (get_pkg_from_apk_path(pkg, path) < 0) {
-		pr_err("Failed to get package name from apk path: %s\n", path);
-		return KSU_MANAGER_UNKNOWN;
-	}
-
-	// pkg is `<real package>`
-	if (strncmp(pkg, KSU_MANAGER_PACKAGE, sizeof(KSU_MANAGER_PACKAGE))) {
-		return KSU_MANAGER_UNKNOWN;
-	}
-#endif
-
-	// dummy.keystore, however, lock it to me.weishu.kernelsu pkgname as per TheSillyOk/33a2a0ed4
-	char buf[KSU_MAX_PACKAGE_NAME];
-	constexpr char p[] = "me.weishu.kernelsu";
-	if (check_v2_signature(path, 0x363, "4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549") && 
-		!get_pkg_from_apk_path(buf, path) && !__builtin_memcmp(buf, p, sizeof(p)))
-		return KSU_MANAGER_OTHER;
-
-	// kernelsu official
-	if (check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH))
-		return KSU_MANAGER_OTHER;
-
-	// KOWX712/KernelSU
-	if (check_v2_signature(path, 0x375, "484fcba6e6c43b1fb09700633bf2fb4758f13cb0b2f4457b80d075084b26c588"))
-		return KSU_MANAGER_OTHER;
-
-	// rifsxd/KernelSU-Next
-	if (check_v2_signature(path, 0x3e6, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"))
-		return KSU_MANAGER_KSUN;
-
-	// RapliVx/KernelSU
-	if (check_v2_signature(path, 0x384, "a9462b8b98ea1ca7901b0cbdcebfaa35f0aa95e51b01d66e6b6d2c81b97746d8"))
-		return KSU_MANAGER_OTHER;
-
-	// Baka-SU/BakaSU (formerly ReSukiSU)
-    if (check_v2_signature(path, 0x377, "d3469712b6214462764a1d8d3e5cbe1d6819a0b629791b9f4101867821f1df64"))
-        return KSU_MANAGER_BAKASU;
-
-	return KSU_MANAGER_UNKNOWN;
-}
-
-#include "../include/ksu.h"
-
-void ksu_set_manager_type(enum ksu_manager_type type)
-{
-	WRITE_ONCE(detected_manager, type);
-}
-
-u32 ksu_get_manager_version(void)
-{
-	switch (READ_ONCE(detected_manager)) {
-	case KSU_MANAGER_KSUN:
-		return KSU_KSUN_VERSION;
-	case KSU_MANAGER_RESUKISU:
-		return KSU_RESUKISU_VERSION;
-	case KSU_MANAGER_BAKASU:
-		return KSU_BAKASU_VERSION;
-	default:
-		return KERNEL_SU_VERSION;
-	}
-}
-
-const char *ksu_get_manager_version_tag(void)
-{
-	switch (READ_ONCE(detected_manager)) {
-	case KSU_MANAGER_KSUN:
-		return KSU_KSUN_TAG;
-	case KSU_MANAGER_RESUKISU:
-		return KSU_RESUKISU_TAG;
-	case KSU_MANAGER_BAKASU:
-		return KSU_BAKASU_TAG;
-	default:
-		return KERNEL_SU_VERSION_TAG;
-	}
-}
-
 bool is_manager_apk(char *path)
 {
-	enum ksu_manager_type type = ksu_detect_manager_apk(path);
-
-	if (type == KSU_MANAGER_UNKNOWN)
-		return false;
-
-	ksu_set_manager_type(type);
-	return true;
+	return check_v2_signature(path, EXPECTED_MANAGER_SIZE, EXPECTED_MANAGER_HASH);
 }

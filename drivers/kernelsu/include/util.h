@@ -1,15 +1,23 @@
 #ifndef __KSU_H_UTIL
 #define __KSU_H_UTIL
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0) // ksyscall start
+#include "linux/fdtable.h" // IWYU pragma: keep
+#include <linux/version.h>
+#include <linux/syscalls.h>
+#include <linux/namei.h>
+#include <linux/fs.h>
+#include <linux/err.h>
+#include <linux/cred.h>
+#include <linux/ptrace.h>
+
+#include "arch.h"
+
 #if defined(__aarch64__)
 #define KSU_SYS_PREFIX(name) __arm64_sys_##name
 #elif defined(__x86_64__)
 #define KSU_SYS_PREFIX(name) __x64_sys_##name
 #elif defined(__riscv)
 #define KSU_SYS_PREFIX(name) __riscv_sys_##name
-#elif defined(__arm__)
-#define KSU_SYS_PREFIX(name) sys_##name
 #else // wire up your arch here.
 static_assert(1 == 0, "Unsupported architecture!");
 #define KSU_SYS_PREFIX(name) sys_##name
@@ -21,17 +29,18 @@ static_assert(1 == 0, "Unsupported architecture!");
  *
  * usage: ksyscall(close, fd);
  */
-#define __ksyscall(name, a, b, c, d, e, f) ({				\
-	extern long KSU_SYS_PREFIX(name)(const struct pt_regs *);	\
-	struct pt_regs __ksu_regs = { 0 };				\
-	PT_REGS_SYSCALL_PARM1(&__ksu_regs) = (unsigned long)(a);	\
-	PT_REGS_PARM2(&__ksu_regs) = (unsigned long)(b);		\
-	PT_REGS_PARM3(&__ksu_regs) = (unsigned long)(c);		\
-	PT_REGS_SYSCALL_PARM4(&__ksu_regs) = (unsigned long)(d);	\
-	PT_REGS_PARM5(&__ksu_regs) = (unsigned long)(e);		\
-	PT_REGS_PARM6(&__ksu_regs) = (unsigned long)(f);		\
-	(long)KSU_SYS_PREFIX(name)(&__ksu_regs);			\
-})
+#define __ksyscall(name, a, b, c, d, e, f)                                                                             \
+    ({                                                                                                                 \
+        extern long KSU_SYS_PREFIX(name)(const struct pt_regs *);                                                      \
+        struct pt_regs __ksu_regs = { 0 };                                                                             \
+        PT_REGS_SYSCALL_PARM1(&__ksu_regs) = (unsigned long)(a);                                                       \
+        PT_REGS_PARM2(&__ksu_regs) = (unsigned long)(b);                                                               \
+        PT_REGS_PARM3(&__ksu_regs) = (unsigned long)(c);                                                               \
+        PT_REGS_SYSCALL_PARM4(&__ksu_regs) = (unsigned long)(d);                                                       \
+        PT_REGS_PARM5(&__ksu_regs) = (unsigned long)(e);                                                               \
+        PT_REGS_PARM6(&__ksu_regs) = (unsigned long)(f);                                                               \
+        (long)KSU_SYS_PREFIX(name)(&__ksu_regs);                                                                       \
+    })
 
 // https://elixir.bootlin.com/musl/v1.2.6/source/src/internal/syscall.h#L45
 #define ksyscall_0(name) __ksyscall(name, 0, 0, 0, 0, 0, 0)
@@ -42,47 +51,6 @@ static_assert(1 == 0, "Unsupported architecture!");
 #define ksyscall_5(name, a, b, c, d, e) __ksyscall(name, a, b, c, d, e, 0)
 #define ksyscall_6(name, a, b, c, d, e, f) __ksyscall(name, a, b, c, d, e, f)
 
-#else /* < 4.19 */
-
-#define KSU_SYS_PREFIX(name) sys_##name
-
-#define ksyscall_0(name) ({						\
-	extern typeof(KSU_SYS_PREFIX(name)) KSU_SYS_PREFIX(name);	\
-	(long)KSU_SYS_PREFIX(name)();					\
-})
-
-#define ksyscall_1(name, a) ({						\
-	extern typeof(KSU_SYS_PREFIX(name)) KSU_SYS_PREFIX(name);	\
-	(long)KSU_SYS_PREFIX(name)(a);					\
-})
-
-#define ksyscall_2(name, a, b) ({					\
-	extern typeof(KSU_SYS_PREFIX(name)) KSU_SYS_PREFIX(name);	\
-	(long)KSU_SYS_PREFIX(name)(a, b);				\
-})
-
-#define ksyscall_3(name, a, b, c) ({					\
-	extern typeof(KSU_SYS_PREFIX(name)) KSU_SYS_PREFIX(name);	\
-	(long)KSU_SYS_PREFIX(name)(a, b, c);				\
-})
-
-#define ksyscall_4(name, a, b, c, d) ({					\
-	extern typeof(KSU_SYS_PREFIX(name)) KSU_SYS_PREFIX(name);	\
-	(long)KSU_SYS_PREFIX(name)(a, b, c, d);				\
-})
-
-#define ksyscall_5(name, a, b, c, d, e) ({				\
-	extern typeof(KSU_SYS_PREFIX(name)) KSU_SYS_PREFIX(name);	\
-	(long)KSU_SYS_PREFIX(name)(a, b, c, d, e);			\
-})
-
-#define ksyscall_6(name, a, b, c, d, e, f) ({				\
-	extern typeof(KSU_SYS_PREFIX(name)) KSU_SYS_PREFIX(name);	\
-	(long)KSU_SYS_PREFIX(name)(a, b, c, d, e, f);			\
-})
-
-#endif /* < 4.19 */
-
 #define __ksyscall_arg_n(_1, _2, _3, _4, _5, _6, _7, N, ...) N
 #define __ksyscall_count_args(...) __ksyscall_arg_n(__VA_ARGS__, 6, 5, 4, 3, 2, 1, 0)
 #define __ksyscall_concat(a, b) a##b
@@ -92,28 +60,24 @@ static_assert(1 == 0, "Unsupported architecture!");
 #define ksu_close_fd(fd) ({ ksyscall(close, fd); })
 #define ksu_sys_setns(fd, flags) ({ ksyscall(setns, fd, flags); })
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)
-#define ksys_unshare(flags) ({ ksyscall(unshare, flags); })
-#endif
-
 static inline struct file *ksu_filp_open_nonotify(const char *path, int flags)
 {
-	struct path p;
-	struct file *f;
-	int ret;
-	ret = kern_path(path, (flags & O_NOFOLLOW) ? 0 : LOOKUP_FOLLOW, &p);
-	if (ret) {
-		return ERR_PTR(ret);
-	}
+    struct path p;
+    struct file *f;
+    int ret;
+    ret = kern_path(path, (flags & O_NOFOLLOW) ? 0 : LOOKUP_FOLLOW, &p);
+    if (ret) {
+        return ERR_PTR(ret);
+    }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
-	f = dentry_open_nonotify(&p, flags, current_cred());
+    f = dentry_open_nonotify(&p, flags, current_cred());
 #else
-	f = dentry_open(&p, flags | __FMODE_NONOTIFY, current_cred());
+    f = dentry_open(&p, flags | __FMODE_NONOTIFY, current_cred());
 #endif
 
-	path_put(&p);
-	return f;
+    path_put(&p);
+    return f;
 }
 
-#endif // __KSU_H_UTIL
+#endif

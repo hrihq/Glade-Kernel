@@ -1,121 +1,72 @@
-#ifdef CONFIG_KSU_SUSFS
-#include <linux/susfs_def.h>
-#endif // #ifdef CONFIG_KSU_SUSFS
+#include <linux/compiler.h>
+#include <linux/version.h>
+#include <linux/slab.h>
+#include <linux/task_work.h>
+#include <linux/thread_info.h>
+#include <linux/seccomp.h>
+#include <linux/printk.h>
+#include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/string.h>
+#include <linux/types.h>
+#include <linux/uaccess.h>
+#include <linux/uidgid.h>
 
-#ifdef CONFIG_KSU_SUSFS
-static inline bool is_zygote_isolated_service_uid(uid_t uid)
+#include "policy/allowlist.h"
+#include "hook/setuid_hook.h"
+#include "klog.h" // IWYU pragma: keep
+#include "manager/manager_identity.h"
+#include "infra/seccomp_cache.h"
+#include "supercall/supercall.h"
+#include "hook/tp_marker.h"
+#include "feature/kernel_umount.h"
+
+int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
 {
-    uid %= 100000;
-    return (uid >= 99000 && uid < 100000);
-}
+    // we rely on the fact that zygote always call setresuid(3) with same uids
 
-static inline bool is_zygote_normal_app_uid(uid_t uid)
-{
-    uid %= 100000;
-    return (uid >= 10000 && uid < 19999);
-}
+    pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
 
-extern u32 susfs_zygote_sid;
-extern struct cred *ksu_cred;
-extern struct work_struct susfs_extra_works;
+    if (unlikely(is_uid_manager(new_uid))) {
+        spin_lock_irq(&current->sighand->siglock);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
+        ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
+#endif
+        ksu_set_task_tracepoint_flag(current);
+        spin_unlock_irq(&current->sighand->siglock);
 
-struct susfs_handle_setuid_tw {
-    struct callback_head cb;
-};
-
-static void susfs_handle_setuid_tw_func(struct callback_head *cb)
-{
-    struct susfs_handle_setuid_tw *tw = container_of(cb, struct susfs_handle_setuid_tw, cb);
-    const struct cred *saved = override_creds(ksu_cred);
-
-    revert_creds(saved);
-    kfree(tw);
-}
-
-static void ksu_handle_extra_susfs_work(void)
-{
-    struct susfs_handle_setuid_tw *tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
-    
-    if (work_pending(&susfs_extra_works))
-        return;
-
-    schedule_work(&susfs_extra_works);
-
-    if (!tw) {
-        pr_err("susfs: No enough memory\n");
-        return;
+        pr_info("install fd for manager: %d\n", new_uid);
+        ksu_install_fd();
+        return 0;
     }
 
-    tw->cb.func = susfs_handle_setuid_tw_func;
-
-    int err = task_work_add(current, &tw->cb, TWA_RESUME);
-    if (err) {
-        kfree(tw);
-        pr_err("susfs: Failed adding task_work 'susfs_handle_setuid_tw', err: %d\n", err);
+    if (ksu_is_allow_uid_for_current(new_uid)) {
+        if (current->seccomp.mode == SECCOMP_MODE_FILTER &&
+            current->seccomp.filter) {
+            spin_lock_irq(&current->sighand->siglock);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
+            ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
+#endif
+            spin_unlock_irq(&current->sighand->siglock);
+        }
+        ksu_set_task_tracepoint_flag(current);
+    } else {
+        ksu_clear_task_tracepoint_flag_if_needed(current);
     }
-}
-#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-extern void susfs_try_umount(uid_t uid);
-#endif // #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-#endif // #ifdef CONFIG_KSU_SUSFS
 
-static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
-{
-	if (!new || !old)
-		return;
-
-	uid_t new_uid = ksu_get_uid_t(new->uid);
-	uid_t old_uid = ksu_get_uid_t(old->uid);
-
-	// old process is not root, ignore it.
-	if (unlikely(!!old_uid))
-		return;
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-    // Check if spawned process is isolated service first, and force to do umount if so  
-    if (is_zygote_isolated_service_uid(new_uid)) {
-        goto do_umount;
-    }
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-
-	if (IS_ENABLED(CONFIG_KSU_DEBUG))
-		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
-
-	// we dont have those new fancy things upstream has
-	// lets just do the original thing where we disable seccomp
-	if (unlikely(is_uid_manager(new_uid)))
-		goto install_ksu_fd;
-
-	if (ksu_is_allow_uid_for_current(new_uid))
-		goto kill_seccomp;
-
-	// Handle kernel umount
-do_umount:
     // Handle kernel umount
-#ifndef CONFIG_KSU_SUSFS_TRY_UMOUNT
-    ksu_handle_umount(new, old);
-#else
-    susfs_try_umount(new_uid);
-#endif // #ifndef CONFIG_KSU_SUSFS_TRY_UMOUNT
+    ksu_handle_umount(old_uid, new_uid);
 
-#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-    //susfs_run_sus_path_loop(new_uid);
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+    return 0;
+}
 
-#ifdef CONFIG_KSU_SUSFS
-    ksu_handle_extra_susfs_work();
+void __init ksu_setuid_hook_init(void)
+{
+    ksu_kernel_umount_init();
+}
 
-    susfs_set_current_proc_umounted();
-
-    return;
-#endif // #ifdef CONFIG_KSU_SUSFS
-	return;
-
-install_ksu_fd:
-	pr_info("install fd for manager: %d\n", new_uid);
-	ksu_install_fd();
-
-kill_seccomp:
-	disable_seccomp();
-	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
-	return;
+void __exit ksu_setuid_hook_exit(void)
+{
+    pr_info("ksu_core_exit\n");
+    ksu_kernel_umount_exit();
 }
