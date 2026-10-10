@@ -3,17 +3,12 @@ name: Build Glade Kernel
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: 'Release tag to publish (e.g. v1.11). Leave empty to skip the release.'
-        required: false
-        default: ''
       build_type:
         description: 'Select Build Type'
         required: true
-        default: 'BOTH'
+        default: 'MIUI-OOS'
         type: choice
         options:
-          - BOTH
           - MIUI-OOS
           - AOSP
 
@@ -26,9 +21,6 @@ on:
           - AOSP-Clang
           - Neutron-Clang
 
-permissions:
-  contents: write
-
 jobs:
   Reforging:
     runs-on: ubuntu-latest
@@ -38,7 +30,7 @@ jobs:
       uses: actions/checkout@v5
       with:
         submodules: recursive
-        fetch-depth: 0
+        fetch-depth: 1
 
     - name: ⏰ Prepare timezone
       run: |
@@ -70,10 +62,6 @@ jobs:
       run: |
         echo "BUILD_TIME=$(TZ=Asia/Jakarta date '+%d%m%Y-%H%M')" >> "$GITHUB_ENV"
         echo "BUILD_DATE=\"$(TZ=Asia/Jakarta date '+%b %d %Y')\"" >> "$GITHUB_ENV"
-        # Short hash of the exact commit being built. Goes into the release
-        # notes so the Glade Manager app can tell whether the device is
-        # already running this build (GladeDetection matches "Commit: <hash>").
-        echo "COMMIT_HASH=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_ENV"
 
     - name: 🔧 Setup Compiler
       shell: bash
@@ -131,52 +119,7 @@ jobs:
         "$GITHUB_WORKSPACE/clang/bin/clang" --version | head -n 1
         "$GITHUB_WORKSPACE/clang/bin/ld.lld" --version | head -n 1
 
-    # ------------------------------------------------------------------
-    # Build one variant per requested build type. MIUI-OOS and AOSP share
-    # the same kernel image; they only differ in the physical panel
-    # dimensions written into the DSI panel DTSI, which the HyperOS and
-    # AOSP display HALs read to compute DPI. The tree ships the AOSP
-    # values, so OEM is produced by patching them back to the Xiaomi ones.
-    # ------------------------------------------------------------------
-    - name: 📱 Patch Panel Dimensions
-      shell: bash
-      run: |
-        set -e
-
-        apply_panel_dimensions() {
-            local w="$1"
-            local h="$2"
-
-            local files=(
-                "arch/arm64/boot/dts/qcom/xiaomi/sweet/dsi-panel-k6-38-0e-0b-fhd-dsc-video.dtsi"
-                "arch/arm64/boot/dts/qcom/xiaomi/sweet/dsi-panel-k6-38-0c-0a-fhd-dsc-video.dtsi"
-            )
-
-            for f in "${files[@]}"; do
-                if [[ -f "$f" ]]; then
-                    echo "Patching $f → ${w}x${h}"
-                    sed -i \
-                      "s/\(qcom,mdss-pan-physical-width-dimension[[:space:]]*=[[:space:]]*< *\)[0-9]\+/\1${w}/" \
-                      "$f"
-                    sed -i \
-                      "s/\(qcom,mdss-pan-physical-height-dimension[[:space:]]*=[[:space:]]*< *\)[0-9]\+/\1${h}/" \
-                      "$f"
-                else
-                    echo "NOTE: $f not present in this tree, skipping"
-                fi
-            done
-        }
-
-        if [[ "${{ github.event.inputs.build_type }}" == "AOSP" ]]; then
-            apply_panel_dimensions 69 156
-        else
-            # MIUI-OOS and BOTH both need the Xiaomi (OEM) dimensions for the
-            # HyperOS display HAL; the AOSP variant is rebuilt below.
-            apply_panel_dimensions 695 1546
-        fi
-
-    - name: 🛠️ Build Kernel (MIUI-OOS / OEM)
-      if: github.event.inputs.build_type != 'AOSP'
+    - name: 🛠️ Build Kernel
       shell: bash
       run: |
         set -e
@@ -203,32 +146,24 @@ jobs:
         echo "========================================="
         echo "       Glade Kernel Compilation"
         echo "========================================="
-        echo "Build type : MIUI-OOS (OEM)"
+        echo "Build type : ${{ github.event.inputs.build_type }}"
         echo "Compiler   : ${{ github.event.inputs.compiler }}"
         echo "Date       : $BUILD_DATE"
-        echo "Commit     : $COMMIT_HASH"
         echo "Jobs       : $(nproc --all)"
         echo
         clang --version | head -n1
         echo "========================================="
-
-        # Vendored KSU driver: the rev-list count of the squashed driver
-        # repo does not describe the real upstream version, so set it
-        # explicitly. 30401 = v3.4.1.
-        export KSU_VERSION_OVERRIDE=30401
 
         make O=out ARCH=arm64 sweet_defconfig
 
         make \
           -j"$(nproc --all)" \
           O=out \
-          ARCH=arm64 \
-          KSU_VERSION_OVERRIDE=30401
+          ARCH=arm64
 
         cp out/.config out/sweet_defconfig.txt
 
-    - name: ✅ Verify Kernel Build (MIUI-OOS / OEM)
-      if: github.event.inputs.build_type != 'AOSP'
+    - name: ✅ Verify Kernel Build
       shell: bash
       run: |
         set -e
@@ -254,15 +189,13 @@ jobs:
           exit 1
         fi
 
-    - name: 💾 Upload configs (MIUI-OOS / OEM)
-      if: github.event.inputs.build_type != 'AOSP'
+    - name: 💾 Upload configs
       uses: actions/upload-artifact@v5
       with:
-        name: configs-oem-${{ env.BUILD_TIME }}
+        name: configs-${{ env.BUILD_TIME }}
         path: out/sweet_defconfig.txt
 
-    - name: 📂 Clone AnyKernel3 & Zip (MIUI-OOS / OEM)
-      if: github.event.inputs.build_type != 'AOSP'
+    - name: 📂 Clone AnyKernel3 & Zip
       shell: bash
       run: |
         set -e
@@ -279,200 +212,12 @@ jobs:
         cd AnyKernel3
 
         zip -r9 \
-          "../Glade-Kernel-${{ github.event.inputs.release_tag || github.ref_name }}-OEM.zip" \
+          "../Glade-${{ github.ref_name }}-${{ env.BUILD_TIME }}.zip" \
           . \
           -x ".git/*"
 
-    - name: 📤 Upload Flashable Zip (MIUI-OOS / OEM)
-      if: github.event.inputs.build_type != 'AOSP'
+    - name: 📤 Upload Flashable Zip
       uses: actions/upload-artifact@v5
       with:
-        name: Glade-OEM-${{ env.BUILD_TIME }}
-        path: Glade-Kernel-${{ github.event.inputs.release_tag || github.ref_name }}-OEM.zip
-
-    # ------------------------------------------------------------------
-    # AOSP variant. When BOTH was selected the tree is reset and rebuilt
-    # with the AOSP panel dimensions; when only AOSP was selected the
-    # first patch step already applied them, so the build runs directly.
-    # ------------------------------------------------------------------
-    - name: 🧹 Clean for AOSP variant
-      if: github.event.inputs.build_type == 'BOTH'
-      shell: bash
-      run: |
-        rm -rf out AnyKernel3
-        git checkout -- arch/arm64/boot/dts/qcom/xiaomi/sweet/
-
-    - name: 📱 Patch Panel Dimensions (AOSP)
-      if: github.event.inputs.build_type == 'BOTH'
-      shell: bash
-      run: |
-        set -e
-
-        apply_panel_dimensions() {
-            local w="$1"
-            local h="$2"
-
-            local files=(
-                "arch/arm64/boot/dts/qcom/xiaomi/sweet/dsi-panel-k6-38-0e-0b-fhd-dsc-video.dtsi"
-                "arch/arm64/boot/dts/qcom/xiaomi/sweet/dsi-panel-k6-38-0c-0a-fhd-dsc-video.dtsi"
-            )
-
-            for f in "${files[@]}"; do
-                if [[ -f "$f" ]]; then
-                    echo "Patching $f → ${w}x${h}"
-                    sed -i \
-                      "s/\(qcom,mdss-pan-physical-width-dimension[[:space:]]*=[[:space:]]*< *\)[0-9]\+/\1${w}/" \
-                      "$f"
-                    sed -i \
-                      "s/\(qcom,mdss-pan-physical-height-dimension[[:space:]]*=[[:space:]]*< *\)[0-9]\+/\1${h}/" \
-                      "$f"
-                else
-                    echo "NOTE: $f not present in this tree, skipping"
-                fi
-            done
-        }
-
-        apply_panel_dimensions 69 156
-
-    - name: 🛠️ Build Kernel (AOSP)
-      if: github.event.inputs.build_type != 'MIUI-OOS'
-      shell: bash
-      run: |
-        set -e
-
-        export ARCH=arm64
-        export SUBARCH=arm64
-
-        export KBUILD_BUILD_USER=hrihq
-        export KBUILD_BUILD_HOST=LineageOS
-
-        export PATH="$CLANG_PATH/bin:$PATH"
-
-        export LLVM=1
-        export LLVM_IAS=1
-
-        export CC=clang
-        export LD=ld.lld
-
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
-
-        export KBUILD_COMPILER_STRING="$(clang --version | head -n1)"
-
-        echo "========================================="
-        echo "       Glade Kernel Compilation"
-        echo "========================================="
-        echo "Build type : AOSP"
-        echo "Compiler   : ${{ github.event.inputs.compiler }}"
-        echo "Date       : $BUILD_DATE"
-        echo "Commit     : $COMMIT_HASH"
-        echo "Jobs       : $(nproc --all)"
-        echo
-        clang --version | head -n1
-        echo "========================================="
-
-        export KSU_VERSION_OVERRIDE=30401
-
-        make O=out ARCH=arm64 sweet_defconfig
-
-        make \
-          -j"$(nproc --all)" \
-          O=out \
-          ARCH=arm64 \
-          KSU_VERSION_OVERRIDE=30401
-
-        cp out/.config out/sweet_defconfig.txt
-
-    - name: ✅ Verify Kernel Build (AOSP)
-      if: github.event.inputs.build_type != 'MIUI-OOS'
-      shell: bash
-      run: |
-        set -e
-
-        KERNEL="out/arch/arm64/boot/Image.gz"
-        DTBO="out/arch/arm64/boot/dtbo.img"
-        DTB="out/arch/arm64/boot/dtb.img"
-
-        failed=0
-
-        for file in "$KERNEL" "$DTBO" "$DTB"; do
-          if [[ ! -f "$file" ]]; then
-            echo "❌ Missing: $file"
-            failed=1
-          else
-            echo "✅ Found: $file"
-            ls -lh "$file"
-          fi
-        done
-
-        if [[ "$failed" -ne 0 ]]; then
-          echo "Kernel compilation failed."
-          exit 1
-        fi
-
-    - name: 💾 Upload configs (AOSP)
-      if: github.event.inputs.build_type != 'MIUI-OOS'
-      uses: actions/upload-artifact@v5
-      with:
-        name: configs-aosp-${{ env.BUILD_TIME }}
-        path: out/sweet_defconfig.txt
-
-    - name: 📂 Clone AnyKernel3 & Zip (AOSP)
-      if: github.event.inputs.build_type != 'MIUI-OOS'
-      shell: bash
-      run: |
-        set -e
-
-        git clone \
-          --depth=1 \
-          https://github.com/hrihq/Glade-AnyKernel3.git \
-          AnyKernel3
-
-        cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
-        cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
-        cp out/arch/arm64/boot/dtb.img AnyKernel3/dtb.img
-
-        cd AnyKernel3
-
-        zip -r9 \
-          "../Glade-Kernel-${{ github.event.inputs.release_tag || github.ref_name }}.zip" \
-          . \
-          -x ".git/*"
-
-    - name: 📤 Upload Flashable Zip (AOSP)
-      if: github.event.inputs.build_type != 'MIUI-OOS'
-      uses: actions/upload-artifact@v5
-      with:
-        name: Glade-AOSP-${{ env.BUILD_TIME }}
-        path: Glade-Kernel-${{ github.event.inputs.release_tag || github.ref_name }}.zip
-
-    # ------------------------------------------------------------------
-    # Publish a GitHub Release. Glade Manager polls
-    # /repos/hrihq/Glade-Kernel/releases/latest, matches the "Commit: <hash>"
-    # line in the body against /proc/version, and notifies the user when they
-    # differ — so a published release IS the update notification.
-    # ------------------------------------------------------------------
-    - name: 🚀 Publish Release
-      if: github.event.inputs.release_tag != ''
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ github.event.inputs.release_tag }}
-        name: Glade Kernel ${{ github.event.inputs.release_tag }}
-        body: |
-          Glade Kernel ${{ github.event.inputs.release_tag }}
-          4.14.357-openela
-          Device: Redmi Note 12 Pro 4G (sweet/sweet2)
-          Commit: ${{ env.COMMIT_HASH }}
-
-          • KernelSU-Next v3.4.1
-          • Build date: ${{ env.BUILD_DATE }}
-          • Build type: ${{ github.event.inputs.build_type }}
-          • Compiler: ${{ github.event.inputs.compiler }}
-
-          OEM = HyperOS / MIUI (panel 695×1546)
-          AOSP = LineageOS and other AOSP ROMs (panel 69×156)
-        files: |
-          Glade-Kernel-${{ github.event.inputs.release_tag }}-OEM.zip
-          Glade-Kernel-${{ github.event.inputs.release_tag }}.zip
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: Glade-${{ github.ref_name }}-${{ env.BUILD_TIME }}
+        path: Glade-${{ github.ref_name }}-${{ env.BUILD_TIME }}.zip

@@ -1,0 +1,239 @@
+name: Build Glade Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Select Build Type'
+        required: true
+        default: 'MIUI-OOS'
+        type: choice
+        options:
+          - MIUI-OOS
+          - AOSP
+
+jobs:
+  Build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 🔄 Checkout Code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: ⏰ Prepare timezone
+      run: |
+        sudo ln -sf /usr/share/zoneinfo/Asia/Jakarta /etc/localtime
+
+    - name: 📦 Install Dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y \
+          bc cpio flex bison git python-is-python3 tar perl wget curl \
+          aria2 lz4 libssl-dev libelf-dev libyaml-dev dwarves zip zstd \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi build-essential
+
+    - name: ⚙️ Setup Environment
+      run: |
+        echo "BUILD_TIME=$(TZ=Asia/Jakarta date '+%d%m%Y-%H%M')" >> "$GITHUB_ENV"
+        echo "BUILD_DATE=\"$(TZ=Asia/Jakarta date '+%b %d %Y')\"" >> "$GITHUB_ENV"
+
+    - name: 🔧 Setup Compiler
+      shell: bash
+      run: |
+        set -e
+
+        mkdir -p clang
+
+        # AOSP clang r450784d (Android 13, clang 14) from googlesource.
+        # The bachnxuan/aosp_clang_mirror tarball is truncated (verified
+        # corrupt in earlier runs), so fetch straight from the source.
+        CLANG_TARBALL_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android13-release/clang-r450784d.tar.gz"
+
+        echo "Downloading AOSP clang r450784d (Android 13) from googlesource"
+        ok=0
+        for attempt in 1 2 3 4 5; do
+          echo "attempt $attempt"
+          curl -fL --retry 3 --retry-delay 5 -C - -o clang.tar.gz "$CLANG_TARBALL_URL"
+          if tar tzf clang.tar.gz >/dev/null 2>&1; then
+            ok=1
+            echo "archive OK"
+            break
+          fi
+          echo "archive corrupt, retrying"
+          rm -f clang.tar.gz
+          sleep $((attempt * 5))
+        done
+        if [ "$ok" -ne 1 ]; then
+          echo "FAILED to download a valid clang archive"
+          exit 1
+        fi
+
+        tar -C clang -xzf clang.tar.gz
+        rm -f clang.tar.gz
+
+        echo "CLANG_PATH=$GITHUB_WORKSPACE/clang" >> "$GITHUB_ENV"
+
+        echo
+        echo "Compiler:"
+        "$GITHUB_WORKSPACE/clang/bin/clang" --version | head -n 1
+        "$GITHUB_WORKSPACE/clang/bin/ld.lld" --version | head -n 1
+
+    - name: 📱 Patch Panel Dimensions
+      shell: bash
+      run: |
+        set -e
+
+        apply_panel_dimensions() {
+            local w="$1"
+            local h="$2"
+
+            local files=(
+                "arch/arm64/boot/dts/qcom/xiaomi/sweet/dsi-panel-k6-38-0e-0b-fhd-dsc-video.dtsi"
+                "arch/arm64/boot/dts/qcom/xiaomi/sweet/dsi-panel-k6-38-0c-0a-fhd-dsc-video.dtsi"
+            )
+
+            for f in "${files[@]}"; do
+                if [[ -f "$f" ]]; then
+
+                    echo "Patching $f → ${w}x${h}"
+
+                    sed -i \
+                      "s/\(qcom,mdss-pan-physical-width-dimension[[:space:]]*=[[:space:]]*< *\)[0-9]\+/\1${w}/" \
+                      "$f"
+
+                    sed -i \
+                      "s/\(qcom,mdss-pan-physical-height-dimension[[:space:]]*=[[:space:]]*< *\)[0-9]\+/\1${h}/" \
+                      "$f"
+                else
+                    echo "NOTE: $f not present in this tree, skipping"
+                fi
+            done
+        }
+
+        if [[ "${{ github.event.inputs.build_type }}" == "AOSP" ]]; then
+            apply_panel_dimensions 69 156
+        else
+            apply_panel_dimensions 695 1546
+        fi
+
+    - name: 🛠️ Build Kernel
+      shell: bash
+      run: |
+        set -e
+
+        export ARCH=arm64
+        export SUBARCH=arm64
+
+        export KBUILD_BUILD_USER=hrihq
+        export KBUILD_BUILD_HOST=Glade
+
+        export PATH="$CLANG_PATH/bin:$PATH"
+
+        export LLVM=1
+        export LLVM_IAS=1
+
+        # Absolute paths so sub-makes and cc-option probes cannot pick up
+        # anything but r450784d.
+        export CC=$CLANG_PATH/bin/clang
+        export LD=$CLANG_PATH/bin/ld.lld
+        export AR=$CLANG_PATH/bin/llvm-ar
+        export NM=$CLANG_PATH/bin/llvm-nm
+        export OBJCOPY=$CLANG_PATH/bin/llvm-objcopy
+        export STRIP=$CLANG_PATH/bin/llvm-strip
+
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+
+        export KBUILD_COMPILER_STRING="$("$CLANG_PATH/bin/clang" --version | head -n1)"
+
+        echo "========================================="
+        echo "       Glade Kernel Compilation"
+        echo "========================================="
+        echo "Build type : ${{ github.event.inputs.build_type }}"
+        echo "Compiler   : AOSP clang r450784d (googlesource)"
+        echo "Date       : $BUILD_DATE"
+        echo "Jobs       : $(nproc --all)"
+        echo "========================================="
+
+        make O=out ARCH=arm64 sweet_defconfig
+
+        # On 4.14 the %defconfig target's silentoldconfig run writes a stray
+        # .config and include/config/ into the *source* tree even with O=, and
+        # prepare3 then aborts the real build with ".. is not clean". Remove
+        # those artifacts (the copy the build needs lives in out/).
+        rm -f .config
+        rm -rf include/config
+
+        # LLVM=1 forces HOSTCC=clang in the Makefile, which then links host
+        # tools (dtc needs -lyaml) through clang's bundled lld and cannot find
+        # the distro libyaml. Pin the host toolchain to system gcc via the make
+        # command line, which overrides the Makefile assignment.
+        make -j"$(nproc --all)" O=out ARCH=arm64 \
+          HOSTCC=gcc HOSTCXX=g++ \
+          2>&1 | tee build.log
+
+        cp out/.config out/sweet_defconfig.txt
+
+    - name: ✅ Verify Kernel Build
+      shell: bash
+      run: |
+        set -e
+        KERNEL="out/arch/arm64/boot/Image.gz"
+        DTBO="out/arch/arm64/boot/dtbo.img"
+        DTB="out/arch/arm64/boot/dtb.img"
+
+        failed=0
+
+        for file in "$KERNEL" "$DTBO" "$DTB"; do
+          if [[ ! -f "$file" ]]; then
+            echo "❌ Missing: $file"
+            failed=1
+          else
+            echo "✅ Found: $file"
+            ls -lh "$file"
+          fi
+        done
+
+        if [[ "$failed" -ne 0 ]]; then
+          echo "Kernel compilation failed."
+          exit 1
+        fi
+
+    - name: 💾 Upload configs & log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: configs-${{ env.BUILD_TIME }}
+        path: |
+          out/sweet_defconfig.txt
+          build.log
+        if-no-files-found: ignore
+
+    - name: 📂 Clone AnyKernel3 & Zip
+      shell: bash
+      run: |
+        set -e
+
+        git clone \
+          --depth=1 \
+          https://github.com/hrihq/Glade-AnyKernel3.git \
+          AnyKernel3
+
+        cp out/arch/arm64/boot/Image.gz AnyKernel3/Image.gz
+        cp out/arch/arm64/boot/dtbo.img AnyKernel3/dtbo.img
+        cp out/arch/arm64/boot/dtb.img AnyKernel3/dtb.img
+
+        cd AnyKernel3
+
+        zip -r9 \
+          "../Glade-Kernel-${{ github.ref_name }}-${{ env.BUILD_TIME }}.zip" \
+          . \
+          -x ".git/*"
+
+    - name: 📤 Upload Flashable Zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: Glade-Kernel-${{ github.ref_name }}-${{ env.BUILD_TIME }}
+        path: Glade-Kernel-${{ github.ref_name }}-${{ env.BUILD_TIME }}.zip
