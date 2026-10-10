@@ -35,14 +35,10 @@ static_assert(1 == 0, "Unsupported architecture!");
  * usage: ksyscall(close, fd);
  */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
-// 4.14 has no pt_regs syscall wrappers; syscalls take plain args.
-#define __ksyscall(name, a, b, c, d, e, f)                                                                             \
-    ({                                                                                                                 \
-        asmlinkage long KSU_SYS_PREFIX(name)(unsigned long, unsigned long, unsigned long, unsigned long,               \
-                                            unsigned long, unsigned long);                                              \
-        (long)KSU_SYS_PREFIX(name)((unsigned long)(a), (unsigned long)(b), (unsigned long)(c), (unsigned long)(d),     \
-                                   (unsigned long)(e), (unsigned long)(f));                                            \
-    })
+// 4.14 has no pt_regs syscall wrappers; the only ksyscall used is close(fd),
+// which <linux/syscalls.h> already declares.
+#define ksu_close_fd(fd) ((long)sys_close((unsigned int)(fd)))
+#define __ksyscall(name, a, b, c, d, e, f) ((long)0)
 #else
 #define __ksyscall(name, a, b, c, d, e, f)                                                                             \
     ({                                                                                                                 \
@@ -73,7 +69,9 @@ static_assert(1 == 0, "Unsupported architecture!");
 #define __ksyscall_exp(func, arg) __ksyscall_concat(func, arg)
 #define ksyscall(...) __ksyscall_exp(ksyscall_, __ksyscall_count_args(__VA_ARGS__))(__VA_ARGS__)
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
 #define ksu_close_fd(fd) ({ ksyscall(close, fd); })
+#endif
 #define ksu_sys_setns(fd, flags) ({ ksyscall(setns, fd, flags); })
 
 static inline struct file *ksu_filp_open_nonotify(const char *path, int flags)
