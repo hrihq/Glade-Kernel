@@ -884,7 +884,12 @@ static bool set_type_state(struct policydb *db, const char *type_name,
 static void add_typeattribute_raw(struct policydb *db, struct type_datum *type,
                                   struct type_datum *attr)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0) || defined(KSU_TYPE_VAL_TO_STRUCT)
     struct ebitmap *sattr = &db->type_attr_map_array[type->value - 1];
+#else
+    struct ebitmap *sattr =
+        (struct ebitmap *)flex_array_get(db->type_attr_map_array, type->value - 1);
+#endif
     ebitmap_set_bit(sattr, attr->value - 1, 1);
 
     struct hashtab_node *node;
