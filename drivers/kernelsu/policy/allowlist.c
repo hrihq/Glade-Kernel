@@ -1,4 +1,7 @@
 #include <linux/rcupdate.h>
+#include <linux/sched.h>
+#include <linux/sched/task.h>
+#include <linux/pid.h>
 #include <linux/limits.h>
 #include <linux/rculist.h>
 #include <linux/mutex.h>
