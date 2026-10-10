@@ -575,7 +575,73 @@ static int apply_one_sepolicy_cmd(struct policydb *db,
     }
 }
 
+struct handle_sepolicy_args {
+	void *ctx_success_cmd_count;
+	void *ctx_payload;
+	u64 ctx_data_len;
+};
+
+static int handle_sepolicy_fn(void *data)
+{
+	struct sepol_batch_cursor cursor;
+	int ret = 0;
+	u32 cmd_index = 0;
+	int success_cmd_count = 0;
+
+	struct policydb *db = get_policydb();
+	struct handle_sepolicy_args *ctx = (struct handle_sepolicy_args *)data;
+	u8 *payload = (u8 *)ctx->ctx_payload;
+	u64 data_len = ctx->ctx_data_len;
+
+	cursor.cur = payload;
+	cursor.end = payload + (size_t)data_len;
+
+	while (cursor.cur < cursor.end) {
+		struct sepol_data header;
+		const char *args[KSU_SEPOLICY_MAX_ARGS] = { 0 };
+		int expected_argc;
+		u32 arg_index;
+
+		ret = sepol_read_cmd_header(&cursor, &header);
+		if (ret < 0) {
+			pr_err("sepol: failed to read cmd header #%u.\n", cmd_index);
+			goto out;
+		}
+
+		expected_argc = sepol_expected_argc(header.cmd);
+		if (expected_argc < 0 || expected_argc > KSU_SEPOLICY_MAX_ARGS) {
+			ret = -EINVAL;
+			pr_err("sepol: invalid cmd header #%u.\n", cmd_index);
+			goto out;
+		}
+
+		for (arg_index = 0; arg_index < (u32)expected_argc; arg_index++) {
+			ret = sepol_read_string(&cursor, &args[arg_index]);
+			if (ret < 0) {
+				pr_err("sepol: failed to read cmd #%u arg #%u.\n", cmd_index, arg_index);
+				goto out;
+			}
+		}
+
+		ret = apply_one_sepolicy_cmd(db, &header, args);
+		if (ret < 0)
+			pr_err("sepol: cmd #%u failed, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
+		else {
+			pr_info("sepol: cmd #%u success, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
+			success_cmd_count++;
+			ksu_add_shit_to_list(header.cmd, args);
+		}
+
+		cmd_index++;
+	}
+
+out:
+	*(int *)(ctx->ctx_success_cmd_count) = success_cmd_count;
+	return ret;
+}
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+
 int handle_sepolicy(void __user *user_data, u64 data_len)
 {
     struct selinux_policy *pol, *old_pol;
@@ -689,70 +755,6 @@ out_free:
     return ret;
 }
 
-struct handle_sepolicy_args {
-	void *ctx_success_cmd_count;
-	void *ctx_payload;
-	u64 ctx_data_len;
-};
-
-static int handle_sepolicy_fn(void *data)
-{
-	struct sepol_batch_cursor cursor;
-	int ret = 0;
-	u32 cmd_index = 0;
-	int success_cmd_count = 0;
-
-	struct policydb *db = get_policydb();
-	struct handle_sepolicy_args *ctx = (struct handle_sepolicy_args *)data;
-	u8 *payload = (u8 *)ctx->ctx_payload;
-	u64 data_len = ctx->ctx_data_len;
-
-	cursor.cur = payload;
-	cursor.end = payload + (size_t)data_len;
-
-	while (cursor.cur < cursor.end) {
-		struct sepol_data header;
-		const char *args[KSU_SEPOLICY_MAX_ARGS] = { 0 };
-		int expected_argc;
-		u32 arg_index;
-
-		ret = sepol_read_cmd_header(&cursor, &header);
-		if (ret < 0) {
-			pr_err("sepol: failed to read cmd header #%u.\n", cmd_index);
-			goto out;
-		}
-
-		expected_argc = sepol_expected_argc(header.cmd);
-		if (expected_argc < 0 || expected_argc > KSU_SEPOLICY_MAX_ARGS) {
-			ret = -EINVAL;
-			pr_err("sepol: invalid cmd header #%u.\n", cmd_index);
-			goto out;
-		}
-
-		for (arg_index = 0; arg_index < (u32)expected_argc; arg_index++) {
-			ret = sepol_read_string(&cursor, &args[arg_index]);
-			if (ret < 0) {
-				pr_err("sepol: failed to read cmd #%u arg #%u.\n", cmd_index, arg_index);
-				goto out;
-			}
-		}
-
-		ret = apply_one_sepolicy_cmd(db, &header, args);
-		if (ret < 0)
-			pr_err("sepol: cmd #%u failed, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
-		else {
-			pr_info("sepol: cmd #%u success, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
-			success_cmd_count++;
-			ksu_add_shit_to_list(header.cmd, args);
-		}
-
-		cmd_index++;
-	}
-
-out:
-	*(int *)(ctx->ctx_success_cmd_count) = success_cmd_count;
-	return ret;
-}
 #endif
 
 int handle_sepolicy(void __user *user_data, u64 data_len)
