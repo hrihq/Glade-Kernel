@@ -1,8 +1,5 @@
 name: Build Glade Kernel
 
-permissions:
-  contents: write
-
 on:
   push:
     tags:
@@ -27,6 +24,9 @@ on:
         options:
           - AOSP-Clang
           - Neutron-Clang
+
+permissions:
+  contents: write
 
 jobs:
   Reforging:
