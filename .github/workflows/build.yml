@@ -139,12 +139,6 @@ jobs:
 
         export PATH="$CLANG_PATH/bin:$PATH"
 
-        export LLVM=1
-        export LLVM_IAS=1
-
-        export CC=clang
-        export LD=ld.lld
-
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
 
@@ -154,7 +148,7 @@ jobs:
         echo "       Glade Kernel Compilation"
         echo "========================================="
         echo "Build type : ${{ github.event.inputs.build_type }}"
-        echo "Compiler   : ${{ github.event.inputs.compiler }}"
+        echo "Compiler   : $KBUILD_COMPILER_STRING"
         echo "Date       : $BUILD_DATE"
         echo "Jobs       : $(nproc --all)"
         echo
@@ -197,7 +191,7 @@ jobs:
         fi
 
     - name: 💾 Upload configs
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@v5
       with:
         name: configs-${{ env.BUILD_TIME }}
         path: out/sweet_defconfig.txt
@@ -218,21 +212,17 @@ jobs:
 
         cd AnyKernel3
 
-        # The manager app looks for these two fixed names on the release, so
-        # both variants are always produced regardless of how the run started.
+        # The manager app resolves these two fixed asset names on the release.
         REL_TAG="$GITHUB_REF_NAME"
 
         zip -r9 "../Glade-Kernel-$REL_TAG-OEM.zip" . -x ".git/*"
         zip -r9 "../Glade-Kernel-$REL_TAG.zip"     . -x ".git/*"
-
-        # Keep the timestamped name too for manual runs.
         zip -r9 "../Glade-$REL_TAG-$BUILD_TIME.zip" . -x ".git/*"
 
-        echo "TAG=$REL_TAG" >> "$GITHUB_ENV"
         ls -lh ../*.zip
 
     - name: 📤 Upload Flashable Zips
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@v5
       with:
         name: Glade-Kernel-${{ github.ref_name }}
         path: |
@@ -247,25 +237,12 @@ jobs:
         set -e
 
         if ! command -v gh >/dev/null 2>&1; then
-          echo "gh not available, skipping release publish"
+          echo "gh CLI not available; skipping release publish"
           exit 0
         fi
 
-        TITLE="Glade Kernel ${{ github.ref_name }}"
-        NOTES=$(cat <<'EOF'
-        ## Glade Kernel ${{ github.ref_name }}
-
-        **Fast-charge thermal hold raised from 48°C to 52°C.** The JEITA
-        fast-charge ladder no longer drops the cell to 2.4A (~38W) the moment
-        the pack reaches 48°C — it holds the full 12.2A tier through the warm
-        band. The 58°C hard shutdown and the cold limits are unchanged.
-
-        Flash via recovery (AnyKernel3). Reboot afterwards.
-        EOF
-        )
-
         gh release create "$GITHUB_REF_NAME" \
-          --title "$TITLE" \
-          --notes "$NOTES" \
+          --title "Glade Kernel $GITHUB_REF_NAME" \
+          --notes "Fast-charge thermal hold raised from 48C to 52C (JEITA FCC ladder). Holds the full 12.2A tier through the warm band instead of dropping to 2.4A (~38W) at 48C. The 58C shutdown and cold limits are unchanged. Flash via recovery, reboot afterwards." \
           "Glade-Kernel-$GITHUB_REF_NAME-OEM.zip" \
           "Glade-Kernel-$GITHUB_REF_NAME.zip"
