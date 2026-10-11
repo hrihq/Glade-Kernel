@@ -197,7 +197,7 @@ jobs:
         fi
 
     - name: 💾 Upload configs
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7
       with:
         name: configs-${{ env.BUILD_TIME }}
         path: out/sweet_defconfig.txt
@@ -232,7 +232,7 @@ jobs:
         ls -lh ../*.zip
 
     - name: 📤 Upload Flashable Zips
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7
       with:
         name: Glade-Kernel-${{ github.ref_name }}
         path: |
