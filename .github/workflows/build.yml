@@ -1,6 +1,13 @@
 name: Build Glade Kernel
 
+permissions:
+  contents: write
+
 on:
+  push:
+    tags:
+      - 'v*'
+
   workflow_dispatch:
     inputs:
       build_type:
@@ -211,13 +218,54 @@ jobs:
 
         cd AnyKernel3
 
-        zip -r9 \
-          "../Glade-${{ github.ref_name }}-${{ env.BUILD_TIME }}.zip" \
-          . \
-          -x ".git/*"
+        # The manager app looks for these two fixed names on the release, so
+        # both variants are always produced regardless of how the run started.
+        REL_TAG="$GITHUB_REF_NAME"
 
-    - name: 📤 Upload Flashable Zip
+        zip -r9 "../Glade-Kernel-$REL_TAG-OEM.zip" . -x ".git/*"
+        zip -r9 "../Glade-Kernel-$REL_TAG.zip"     . -x ".git/*"
+
+        # Keep the timestamped name too for manual runs.
+        zip -r9 "../Glade-$REL_TAG-$BUILD_TIME.zip" . -x ".git/*"
+
+        echo "TAG=$REL_TAG" >> "$GITHUB_ENV"
+        ls -lh ../*.zip
+
+    - name: 📤 Upload Flashable Zips
       uses: actions/upload-artifact@v5
       with:
-        name: Glade-${{ github.ref_name }}-${{ env.BUILD_TIME }}
-        path: Glade-${{ github.ref_name }}-${{ env.BUILD_TIME }}.zip
+        name: Glade-Kernel-${{ github.ref_name }}
+        path: |
+          Glade-Kernel-*.zip
+
+    - name: 🚀 Publish GitHub Release
+      if: startsWith(github.ref, 'refs/tags/v')
+      shell: bash
+      env:
+        GH_TOKEN:[REDACTED]
+      run: |
+        set -e
+
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "gh not available, skipping release publish"
+          exit 0
+        fi
+
+        TITLE="Glade Kernel ${{ github.ref_name }}"
+        NOTES=$(cat <<'EOF'
+        ## Glade Kernel ${{ github.ref_name }}
+
+        **Fast-charge thermal hold raised from 48°C to 52°C.** The JEITA
+        fast-charge ladder no longer drops the cell to 2.4A (~38W) the moment
+        the pack reaches 48°C — it holds the full 12.2A tier through the warm
+        band. The 58°C hard shutdown and the cold limits are unchanged.
+
+        Flash via recovery (AnyKernel3). Reboot afterwards.
+        EOF
+        )
+
+        gh release create "$GITHUB_REF_NAME" \
+          --title "$TITLE" \
+          --notes "$NOTES" \
+          "Glade-Kernel-$GITHUB_REF_NAME-OEM.zip" \
+          "Glade-Kernel-$GITHUB_REF_NAME.zip"
