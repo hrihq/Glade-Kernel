@@ -247,8 +247,55 @@ jobs:
           exit 0
         fi
 
+        # Release notes live here so every tag publishes the same structured
+        # changelog the v1.11 release used. Quoted heredoc delimiter: the note
+        # contains backticks and would otherwise be command-substituted.
+        cat > release-notes.md <<'GLADE_NOTES'
+        # Glade Kernel v1.12 — Fast-Charge Thermal Hold
+
+        ## What's Changed
+
+        **Fast-charge thermal hold raised 48 °C → 52 °C** — JEITA FCC ladder, both K6 battery profiles.
+
+        ### The problem
+
+        The JEITA FCC ladder stepped fast-charge current from **12.2 A down to 2.4 A** the moment battery temperature crossed 48 °C (values are tenths of a degree). That 2.4 A tier is what capped usable charging at **~38 W** exactly when the pack was warmest — i.e. precisely when fast charge matters most.
+
+        ### The change
+
+        | Profile | Before | After |
+        | --- | --- | --- |
+        | K6 NVT 5020 mAh | `151 480 12200000` · `481 600 2400000` | `151 520 12200000` · `521 600 2400000` |
+        | K6 Sunwoda 5020 mAh | `151 480 12200000` · `481 600 2400000` | `151 520 12200000` · `521 600 2400000` |
+
+        The full **12.2 A** tier now stays engaged through the real warm band (up to 52 °C) instead of dropping to 2.4 A at 48 °C.
+
+        ### What is *not* changed
+
+        This is a thermal-hold **shift, not a removal**:
+
+        - 58 °C hard shutdown — unchanged
+        - cold limits — unchanged
+        - `BATT_CP_WARM` charge-pump threshold (450) — unchanged
+        - FV ladder keeps its `4480000 → 4100000` step at the same boundary (cell-voltage relief)
+
+        ### Files
+
+        - `arch/arm64/boot/dts/qcom/xiaomi/sweet/batterydata-K6-nvt-5020mah.dtsi`
+        - `arch/arm64/boot/dts/qcom/xiaomi/sweet/batterydata-K6-sunwoda-5020mah.dtsi`
+
+        ## Flash
+
+        Flash the zip in recovery, then reboot. The installer is **AnyKernel3 / systemless** — it patches your existing boot image, so it works on MIUI/OEM and AOSP alike (device `sweet` / `sweet_k6a` / `sweet2`, Android 11–17). Both assets (`-OEM.zip` and `.zip`) are built from the same AnyKernel3 tree; either works.
+
+        ## Notes
+
+        - No gaming/performance changes in this release — charging/thermal only.
+        - CI: builds now run automatically on `v*` tags and publish the release themselves.
+        GLADE_NOTES
+
         gh release create "$GITHUB_REF_NAME" \
           --title "Glade Kernel $GITHUB_REF_NAME" \
-          --notes "Fast-charge thermal hold raised from 48C to 52C (JEITA FCC ladder). Holds the full 12.2A tier through the warm band instead of dropping to 2.4A (~38W) at 48C. The 58C shutdown and cold limits are unchanged. Flash via recovery, reboot afterwards." \
+          --notes-file release-notes.md \
           "Glade-Kernel-$GITHUB_REF_NAME-OEM.zip" \
           "Glade-Kernel-$GITHUB_REF_NAME.zip"
