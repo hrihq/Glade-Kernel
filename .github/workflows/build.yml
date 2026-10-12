@@ -139,6 +139,12 @@ jobs:
 
         export PATH="$CLANG_PATH/bin:$PATH"
 
+        export LLVM=1
+        export LLVM_IAS=1
+
+        export CC=clang
+        export LD=ld.lld
+
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
 
@@ -232,7 +238,7 @@ jobs:
       if: startsWith(github.ref, 'refs/tags/v')
       shell: bash
       env:
-        GH_TOKEN:[REDACTED]
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         set -e
 
