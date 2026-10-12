@@ -294,6 +294,25 @@ jobs:
         - CI: builds now run automatically on `v*` tags and publish the release themselves.
         GLADE_NOTES
 
+        # The manager app decides "already up to date" by matching the running
+        # kernel's git-describe hash against a hash in this body
+        # (GladeDetection.releaseBodyMatches). Hand-written notes forgot it in
+        # v1.11 and every surface nagged "update available" forever, so the
+        # build now appends it from the kernel it just produced — no release
+        # can ship without it.
+        VERSION_STR="$(cat out/include/config/kernel.release 2>/dev/null || true)"
+        if [ -z "$VERSION_STR" ]; then
+          VERSION_STR="$(make -s O=out ARCH=arm64 kernelrelease 2>/dev/null || true)"
+        fi
+        COMMIT="$(printf '%s' "$VERSION_STR" | sed -n 's/.*-g\([0-9a-f]\{7,\}\).*/\1/p')"
+
+        if [ -n "$COMMIT" ]; then
+          printf '\n---\n**Build:** `%s`\nCommit: %s\n' "$VERSION_STR" "$COMMIT" >> release-notes.md
+          echo "release notes carry Commit: $COMMIT"
+        else
+          echo "::warning::no -g<hash> in kernel release '$VERSION_STR' — the manager app cannot match this release"
+        fi
+
         gh release create "$GITHUB_REF_NAME" \
           --title "Glade Kernel $GITHUB_REF_NAME" \
           --notes-file release-notes.md \
