@@ -251,33 +251,41 @@ jobs:
         # changelog the v1.11 release used. Quoted heredoc delimiter: the note
         # contains backticks and would otherwise be command-substituted.
         cat > release-notes.md <<'GLADE_NOTES'
-        # Glade Kernel v1.12 — Fast-Charge Thermal Hold
+        # Glade Kernel v1.13 — Charge Thermal Fix
 
         ## What's Changed
 
-        **Fast-charge thermal hold raised 48 °C → 52 °C** — JEITA FCC ladder, both K6 battery profiles.
+        **Fixed the JEITA ladder mismatch shipped in v1.12** that let the charger hold full fast-charge current against a reduced voltage ceiling. This is the fix for the "phone runs hot / reboots while charging" reports on v1.12.
 
         ### The problem
 
-        The JEITA FCC ladder stepped fast-charge current from **12.2 A down to 2.4 A** the moment battery temperature crossed 48 °C (values are tenths of a degree). That 2.4 A tier is what capped usable charging at **~38 W** exactly when the pack was warmest — i.e. precisely when fast charge matters most.
+        v1.12 raised the fast-charge **current** (FCC) ladder hold from 48 °C to 52 °C but left the **voltage** (FV) ladder stepping down at 48 °C. Between 48.1 °C and 52 °C the pack was therefore charged at the full **12.2 A** while float voltage was already clamped to **4.10 V** — a ceiling meant for the 2.4 A tier.
 
-        ### The change
+        Driving 12.2 A into a 4.10 V ceiling dumps the difference as heat (≈4.6 W) in the band where the pack is already warm, so temperature climbs instead of settling. On a warm start it can reach the 58 °C shutdown mid-charge, which looks like the phone rebooting on its own.
 
-        | Profile | Before | After |
+        ### The fix
+
+        The FV ladder boundary now moves together with the FCC ladder:
+
+        | Battery temp | Charge current | Float voltage |
         | --- | --- | --- |
-        | K6 NVT 5020 mAh | `151 480 12200000` · `481 600 2400000` | `151 520 12200000` · `521 600 2400000` |
-        | K6 Sunwoda 5020 mAh | `151 480 12200000` · `481 600 2400000` | `151 520 12200000` · `521 600 2400000` |
+        | 15.1 – 52.0 °C | 12.2 A | 4.48 V |
+        | 52.1 – 60.0 °C | 2.4 A | 4.10 V |
 
-        The full **12.2 A** tier now stays engaged through the real warm band (up to 52 °C) instead of dropping to 2.4 A at 48 °C.
+        Both K6 battery profiles are aligned the same way:
+
+        | Profile | Before (FV) | After (FV) |
+        | --- | --- | --- |
+        | K6 NVT 5020 mAh | `151 480 4480000` · `481 600 4100000` | `151 520 4480000` · `521 600 4100000` |
+        | K6 Sunwoda 5020 mAh | `151 480 4480000` · `481 600 4100000` | `151 520 4480000` · `521 600 4100000` |
 
         ### What is *not* changed
-
-        This is a thermal-hold **shift, not a removal**:
 
         - 58 °C hard shutdown — unchanged
         - cold limits — unchanged
         - `BATT_CP_WARM` charge-pump threshold (450) — unchanged
-        - FV ladder keeps its `4480000 → 4100000` step at the same boundary (cell-voltage relief)
+        - FCC ladder (`151 520 12200000` · `521 600 2400000`) — unchanged from v1.12
+        - no gaming/performance changes
 
         ### Files
 
@@ -290,8 +298,8 @@ jobs:
 
         ## Notes
 
-        - No gaming/performance changes in this release — charging/thermal only.
-        - CI: builds now run automatically on `v*` tags and publish the release themselves.
+        - Flashed v1.12 and saw the phone run hot or reboot while charging? This build is the fix for exactly that.
+        - CI: builds run automatically on `v*` tags and publish the release themselves.
         GLADE_NOTES
 
         # The manager app decides "already up to date" by matching the running
