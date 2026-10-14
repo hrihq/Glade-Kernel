@@ -251,50 +251,44 @@ jobs:
         # changelog the v1.11 release used. Quoted heredoc delimiter: the note
         # contains backticks and would otherwise be command-substituted.
         cat > release-notes.md <<'GLADE_NOTES'
-        # Glade Kernel v1.14 - Charge Thermal Revert
+        # Glade Kernel v1.15 - Crash Logs Actually Captured
 
         ## What's Changed
 
-        **The fast-charge thermal hold is back at 48 C** - current (FCC) *and* float-voltage (FV) ladders, both K6 battery profiles. This is the fix for the **auto-reboot while charging** reports on v1.13.
+        **Kernel panics are now written to pstore.** Up to v1.14 the ramoops dump zone was zero bytes, so when the kernel went down nothing was saved: `/sys/fs/pstore/` only ever held the plain console log, which the next boot overwrites. That is why every crash report so far arrived without a crash trace.
 
-        ### Why v1.13 still rebooted
+        ### Why nothing was captured
 
-        v1.12 raised the fast-charge **current** hold from 48 C to 52 C. v1.13 then moved the **voltage** boundary to 52 C as well, so between 48.1 C and 52.0 C the pack was charged at the full **12.2 A at 4.48 V**.
+        The cmdline carries `ramoops_memreserve=4M`, and that early reservation split the whole 4 MB region into `console = size/2` plus `pmsg = size/2`:
 
-        A 5020 mAh pack that is already at 48-52 C cannot absorb 12.2 A without getting hotter. Temperature keeps climbing to the driver hard cutoff at 58 C (`BATT_HOT_SHUTDOWN_TEMP`), charging is cut mid-session, and the phone reads as rebooting on its own.
-
-        v1.13 did not fix the v1.12 reports: aligning the two ladders removed the accidental 4.10 V clamp that had been limiting how much charge the hot band could actually take, so v1.13 charged *harder* above 48 C than v1.12 did.
-
-        ### The fix
-
-        Both ladders step down at 48 C again, exactly like the vendor profile:
-
-        | Battery temp | Charge current | Float voltage |
+        | Zone | v1.14 | v1.15 |
         | --- | --- | --- |
-        | 15.1 - 48.0 C | 12.2 A | 4.48 V |
-        | 48.1 - 60.0 C | 2.4 A | 4.10 V |
+        | console | 2 MB | 1 MB |
+        | pmsg | 2 MB | 1 MB |
+        | dump record | 0 (none) | 1 MB x 2 |
 
-        | Profile | v1.13 | v1.14 |
-        | --- | --- | --- |
-        | K6 NVT 5020 mAh | `151 520 12200000` / `521 600 2400000` / `151 520 4480000` / `521 600 4100000` | `151 480 12200000` / `481 600 2400000` / `151 480 4480000` / `481 600 4100000` |
-        | K6 Sunwoda 5020 mAh | same | same |
+        `ramoops_probe()` derives `dump_mem_sz = size - console - ftrace - pmsg`, which came out 0, so `ramoops_init_przs()` returned with `cnt = 0` and no `dmesg-ramoops-*` zone was created at all. The `ramoops_memreserve` path never sets a record size, so the layout had to be fixed in the driver (`fs/pstore/ram.c`).
 
-        ### Trade-off
+        ### Also fixed
 
-        Above 48 C the pack charges at 2.4 A (slow) instead of 12.2 A. That is the vendor behaviour and it is what stops the reboots. Below 48 C charging is unchanged, which is the normal case.
+        - Dropped the two dead ramoops nodes in `sdmmagpie.dtsi` (`ramoops@b0000000` and `ramoops@9d800000`). Both failed to probe, and one sat at the same physical address as the cmdline reservation, so two competing definitions were writing into the same log buffer. There is now exactly one ramoops instance.
+        - The v1.14 charging fix is untouched (48 C FCC/FV ladders on both K6 profiles).
 
-        ### What is *not* changed
+        ### About the black screen
 
-        - 58 C hard shutdown - unchanged
-        - cold limits - unchanged
-        - `BATT_CP_WARM` charge-pump threshold (450) - unchanged
-        - `step-chg-ranges` - unchanged
-        - no gaming/performance changes
+        The black screen after a random reboot is the aftermath of the crash, not a second bug: the kernel comes back up, every DSI engine op fails with `-EINVAL` (`State error`, `ctrl state check failed`), and the panel never powers on even though Android itself boots fine (audio connects, the display stays dark). A cold boot clears it.
 
-        ### Files
+        v1.15 does **not** touch the display code on purpose. The DSI path is left alone until there is a real trace of what actually crashed - a blind display patch risks breaking normal boots. This release is the diagnostics step: it makes the next crash readable.
 
-        - `arch/arm64/boot/dts/qcom/xiaomi/sweet/batterydata-K6-nvt-5020mah.dtsi`
-        - `arch/arm64/boot/dts/qcom/xiaomi/sweet/batterydata-K6-sunwoda-5020mah.dtsi`
+        ### After the next crash
+
+        Grab pstore before rebooting more than once (the console file is overwritten every boot, the dump record survives):
+
+        ```
+        su -c 'cp /sys/fs/pstore/* /sdcard/Download/'
+        ```
+
+        `dmesg-ramoops-0` is the file that matters now: it holds the last kernel messages before the reset.
 
         ## Flash
 
@@ -302,8 +296,10 @@ jobs:
 
         ## Notes
 
-        - Flashed v1.13 and the phone rebooted by itself while charging? This build is the fix for exactly that.
+        - If the reset was a watchdog or a hardware reset rather than a kernel panic, pstore stays empty - `ro.boot.bootreason` is what tells us why.
         - CI: builds run automatically on `v*` tags and publish the release themselves.
+
+        sed -i 's/^        //' release-notes.md
         GLADE_NOTES
 
         # The manager app decides "already up to date" by matching the running

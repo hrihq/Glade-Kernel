@@ -984,8 +984,17 @@ static int __init ramoops_memreserve(char *p)
 	size = memparse(p, &p) & PAGE_MASK;
 	ramoops_data.mem_size = size;
 	ramoops_data.mem_address = 0xB0000000;
-	ramoops_data.console_size = size / 2;
-	ramoops_data.pmsg_size = size / 2;
+	/*
+	 * glade: keep a real dump zone. console+pmsg used to consume the
+	 * whole region (size/2 each), so dump_mem_sz was 0 and
+	 * ramoops_init_przs() created no dump zone -- kernel panics were
+	 * never written to /sys/fs/pstore/dmesg-ramoops-*. Split it:
+	 * console 1/4, pmsg 1/4, dump record 1/4 (=> 2 x 1 MB records
+	 * for a 4M region).
+	 */
+	ramoops_data.console_size = size / 4;
+	ramoops_data.pmsg_size = size / 4;
+	ramoops_data.record_size = size / 4;
 	ramoops_data.dump_oops = 1;
 
 	pr_info("msm_reserve_ramoops_memory addr=%llx,size=%lx\n",

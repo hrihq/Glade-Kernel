@@ -598,14 +598,6 @@
 			size = <0 0xc00000>;
 		};
 
-		ramoops: ramoops@b0000000 {
-			compatible = "removed-dma-pool", "ramoops";
-			no-map;
-			reg = <0 0xb0000000 0 0x400000>;
-			record-size = <0x00200000>;
-			console-size = <0x00200000>;
-		};
-
 		cdsp_mem: cdsp_region {
 			compatible = "shared-dma-pool";
 			alloc-ranges = <0x0 0x00000000 0x0 0xffffffff>;
@@ -656,17 +648,6 @@
 			alignment = <0 0x400000>;
 			size = <0 0x2000000>;
 			linux,cma-default;
-		};
-
-		/* reserve for pstore */
-		ramoops_mem: ramoops@9d800000 {
-			compatible = "ramoops";
-			reg = <0x0 0x9d800000 0x0 0x00400000>;
-
-			record-size = <0x200000>;
-			pmsg-size = <0x200000>;
-			ecc-size = <16>;
-			max-reason = <4>;
 		};
 	};
 };
