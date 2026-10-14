@@ -251,40 +251,44 @@ jobs:
         # changelog the v1.11 release used. Quoted heredoc delimiter: the note
         # contains backticks and would otherwise be command-substituted.
         cat > release-notes.md <<'GLADE_NOTES'
-        # Glade Kernel v1.13 — Charge Thermal Fix
+        # Glade Kernel v1.14 - Charge Thermal Revert
 
         ## What's Changed
 
-        **Fixed the JEITA ladder mismatch shipped in v1.12** that let the charger hold full fast-charge current against a reduced voltage ceiling. This is the fix for the "phone runs hot / reboots while charging" reports on v1.12.
+        **The fast-charge thermal hold is back at 48 C** - current (FCC) *and* float-voltage (FV) ladders, both K6 battery profiles. This is the fix for the **auto-reboot while charging** reports on v1.13.
 
-        ### The problem
+        ### Why v1.13 still rebooted
 
-        v1.12 raised the fast-charge **current** (FCC) ladder hold from 48 °C to 52 °C but left the **voltage** (FV) ladder stepping down at 48 °C. Between 48.1 °C and 52 °C the pack was therefore charged at the full **12.2 A** while float voltage was already clamped to **4.10 V** — a ceiling meant for the 2.4 A tier.
+        v1.12 raised the fast-charge **current** hold from 48 C to 52 C. v1.13 then moved the **voltage** boundary to 52 C as well, so between 48.1 C and 52.0 C the pack was charged at the full **12.2 A at 4.48 V**.
 
-        Driving 12.2 A into a 4.10 V ceiling dumps the difference as heat (≈4.6 W) in the band where the pack is already warm, so temperature climbs instead of settling. On a warm start it can reach the 58 °C shutdown mid-charge, which looks like the phone rebooting on its own.
+        A 5020 mAh pack that is already at 48-52 C cannot absorb 12.2 A without getting hotter. Temperature keeps climbing to the driver hard cutoff at 58 C (`BATT_HOT_SHUTDOWN_TEMP`), charging is cut mid-session, and the phone reads as rebooting on its own.
+
+        v1.13 did not fix the v1.12 reports: aligning the two ladders removed the accidental 4.10 V clamp that had been limiting how much charge the hot band could actually take, so v1.13 charged *harder* above 48 C than v1.12 did.
 
         ### The fix
 
-        The FV ladder boundary now moves together with the FCC ladder:
+        Both ladders step down at 48 C again, exactly like the vendor profile:
 
         | Battery temp | Charge current | Float voltage |
         | --- | --- | --- |
-        | 15.1 – 52.0 °C | 12.2 A | 4.48 V |
-        | 52.1 – 60.0 °C | 2.4 A | 4.10 V |
+        | 15.1 - 48.0 C | 12.2 A | 4.48 V |
+        | 48.1 - 60.0 C | 2.4 A | 4.10 V |
 
-        Both K6 battery profiles are aligned the same way:
-
-        | Profile | Before (FV) | After (FV) |
+        | Profile | v1.13 | v1.14 |
         | --- | --- | --- |
-        | K6 NVT 5020 mAh | `151 480 4480000` · `481 600 4100000` | `151 520 4480000` · `521 600 4100000` |
-        | K6 Sunwoda 5020 mAh | `151 480 4480000` · `481 600 4100000` | `151 520 4480000` · `521 600 4100000` |
+        | K6 NVT 5020 mAh | `151 520 12200000` / `521 600 2400000` / `151 520 4480000` / `521 600 4100000` | `151 480 12200000` / `481 600 2400000` / `151 480 4480000` / `481 600 4100000` |
+        | K6 Sunwoda 5020 mAh | same | same |
+
+        ### Trade-off
+
+        Above 48 C the pack charges at 2.4 A (slow) instead of 12.2 A. That is the vendor behaviour and it is what stops the reboots. Below 48 C charging is unchanged, which is the normal case.
 
         ### What is *not* changed
 
-        - 58 °C hard shutdown — unchanged
-        - cold limits — unchanged
-        - `BATT_CP_WARM` charge-pump threshold (450) — unchanged
-        - FCC ladder (`151 520 12200000` · `521 600 2400000`) — unchanged from v1.12
+        - 58 C hard shutdown - unchanged
+        - cold limits - unchanged
+        - `BATT_CP_WARM` charge-pump threshold (450) - unchanged
+        - `step-chg-ranges` - unchanged
         - no gaming/performance changes
 
         ### Files
@@ -294,11 +298,11 @@ jobs:
 
         ## Flash
 
-        Flash the zip in recovery, then reboot. The installer is **AnyKernel3 / systemless** — it patches your existing boot image, so it works on MIUI/OEM and AOSP alike (device `sweet` / `sweet_k6a` / `sweet2`, Android 11–17). Both assets (`-OEM.zip` and `.zip`) are built from the same AnyKernel3 tree; either works.
+        Flash the zip in recovery, then reboot. The installer is **AnyKernel3 / systemless** - it patches your existing boot image, so it works on MIUI/OEM and AOSP alike (device `sweet` / `sweet_k6a` / `sweet2`, Android 11-17). Both assets (`-OEM.zip` and `.zip`) are built from the same AnyKernel3 tree; either works.
 
         ## Notes
 
-        - Flashed v1.12 and saw the phone run hot or reboot while charging? This build is the fix for exactly that.
+        - Flashed v1.13 and the phone rebooted by itself while charging? This build is the fix for exactly that.
         - CI: builds run automatically on `v*` tags and publish the release themselves.
         GLADE_NOTES
 
